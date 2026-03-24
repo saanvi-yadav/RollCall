@@ -4,7 +4,7 @@ import AuthLayout from "../layouts/AuthLayout";
 import InputField from "../components/InputField";
 import SelectField from "../components/SelectField";
 import PrimaryButton from "../components/PrimaryButton";
-import { userAPI, setAuthToken } from "../utils/apiClient";
+import { setAuthToken, setCurrentUser, userAPI } from "../utils/apiClient";
 
 const Login = () => {
   const [email, setEmail] = useState("");
@@ -33,15 +33,12 @@ const Login = () => {
       setAuthToken(response.token);
 
       // Store user data
-      localStorage.setItem(
-        "currentUser",
-        JSON.stringify({
-          id: response._id,
-          name: response.name,
-          email: response.email,
-          role: response.role,
-        }),
-      );
+      setCurrentUser({
+        id: response._id,
+        name: response.name,
+        email: response.email,
+        role: response.role,
+      });
 
       // Navigate based on role
       if (response.role === "student") navigate("/student/dashboard");

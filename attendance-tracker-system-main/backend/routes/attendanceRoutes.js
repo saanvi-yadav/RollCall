@@ -9,6 +9,8 @@ const {
   getAttendanceByDate,
   getAllAttendanceRecords,
   getStudentAttendance,
+  getClassAttendanceReport,
+  getClassAttendanceSession,
 } = require("../controllers/attendanceController");
 
 router.post("/mark", authMiddleware, markAttendance);
@@ -17,5 +19,7 @@ router.get("/stats", authMiddleware, getAttendanceStats);
 router.get("/by-date", authMiddleware, getAttendanceByDate);
 router.get("/all", authMiddleware, getAllAttendanceRecords);
 router.get("/student/:studentId", authMiddleware, getStudentAttendance);
+router.get("/class/:classId/report", authMiddleware, getClassAttendanceReport);
+router.get("/class/:classId/session", authMiddleware, getClassAttendanceSession);
 
 module.exports = router;

@@ -12,6 +12,21 @@ const getToken = () => {
   return localStorage.getItem("authToken");
 };
 
+const getStoredUser = () => {
+  const storedUser = localStorage.getItem("currentUser");
+
+  if (!storedUser) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(storedUser);
+  } catch (error) {
+    console.error("Failed to parse current user:", error);
+    return null;
+  }
+};
+
 /**
  * Make an API request with common headers
  */
@@ -44,6 +59,19 @@ const apiCall = async (endpoint, options = {}) => {
     console.error(`API Error (${endpoint}):`, error);
     throw error;
   }
+};
+
+const buildQueryString = (params = {}) => {
+  const query = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      query.append(key, value);
+    }
+  });
+
+  const serialized = query.toString();
+  return serialized ? `?${serialized}` : "";
 };
 
 /**
@@ -101,14 +129,26 @@ export const attendanceAPI = {
     });
   },
 
-  getAllAttendanceRecords: async () => {
-    return apiCall("/attendance/all", {
+  getAllAttendanceRecords: async (filters = {}) => {
+    return apiCall(`/attendance/all${buildQueryString(filters)}`, {
       method: "GET",
     });
   },
 
   getStudentAttendance: async (studentId) => {
     return apiCall(`/attendance/student/${studentId}`, {
+      method: "GET",
+    });
+  },
+
+  getClassAttendanceReport: async (classId) => {
+    return apiCall(`/attendance/class/${classId}/report`, {
+      method: "GET",
+    });
+  },
+
+  getClassAttendanceSession: async (classId, date) => {
+    return apiCall(`/attendance/class/${classId}/session?date=${date}`, {
       method: "GET",
     });
   },
@@ -186,6 +226,19 @@ export const classAPI = {
     });
   },
 
+  updateClass: async (classId, classData) => {
+    return apiCall(`/classes/${classId}`, {
+      method: "PUT",
+      body: JSON.stringify(classData),
+    });
+  },
+
+  deleteClass: async (classId) => {
+    return apiCall(`/classes/${classId}`, {
+      method: "DELETE",
+    });
+  },
+
   addStudentToClass: async (classId, studentId) => {
     return apiCall("/classes/add-student", {
       method: "POST",
@@ -193,10 +246,17 @@ export const classAPI = {
     });
   },
 
-  markClassAttendance: async (classId, attendanceData) => {
+  markClassAttendance: async (classId, attendanceData, date) => {
     return apiCall("/classes/mark-attendance", {
       method: "POST",
-      body: JSON.stringify({ classId, attendanceData }),
+      body: JSON.stringify({ classId, attendanceData, date }),
+    });
+  },
+
+  updateClassAttendance: async (classId, attendanceData, date) => {
+    return apiCall("/classes/mark-attendance", {
+      method: "PUT",
+      body: JSON.stringify({ classId, attendanceData, date }),
     });
   },
 };
@@ -244,6 +304,21 @@ export const adminAPI = {
   },
 };
 
+export const notificationAPI = {
+  getNotifications: async () => {
+    return apiCall("/notifications", {
+      method: "GET",
+    });
+  },
+
+  createNotification: async (notificationData) => {
+    return apiCall("/notifications", {
+      method: "POST",
+      body: JSON.stringify(notificationData),
+    });
+  },
+};
+
 /**
  * Helper function to save auth token
  */
@@ -258,9 +333,21 @@ export const clearAuthToken = () => {
   localStorage.removeItem("authToken");
 };
 
+export const getCurrentUser = () => {
+  return getStoredUser();
+};
+
+export const setCurrentUser = (user) => {
+  localStorage.setItem("currentUser", JSON.stringify(user));
+};
+
+export const clearCurrentUser = () => {
+  localStorage.removeItem("currentUser");
+};
+
 /**
  * Check if user is authenticated
  */
 export const isAuthenticated = () => {
-  return !!getToken();
+  return !!getToken() && !!getStoredUser();
 };

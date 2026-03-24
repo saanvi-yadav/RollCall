@@ -5,10 +5,11 @@ const jwt = require("jsonwebtoken");
 const VALID_ROLES = ["student", "professor", "admin"];
 
 const normalizeEmail = (email = "") => email.trim().toLowerCase();
+const normalizeOptional = (value = "") => value.trim();
 
 const registerUser = async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, department, semester, section } = req.body;
     const normalizedEmail = normalizeEmail(email);
     const normalizedRole = (role || "student").toLowerCase();
     const normalizedName = (name || "").trim();
@@ -35,6 +36,12 @@ const registerUser = async (req, res) => {
       email: normalizedEmail,
       password: hashedPassword,
       role: normalizedRole,
+      department: normalizeOptional(department || ""),
+      semester: normalizedRole === "student" ? normalizeOptional(semester || "") : "",
+      section:
+        normalizedRole === "student"
+          ? normalizeOptional(section || "").toUpperCase()
+          : "",
     };
 
     // if frontend ever adds username field, this can be included safely
@@ -49,6 +56,9 @@ const registerUser = async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      department: user.department,
+      semester: user.semester,
+      section: user.section,
     });
   } catch (err) {
     console.error("RegisterUser error:", err);
@@ -103,6 +113,9 @@ const loginUser = async (req, res) => {
       name: user.name,
       email: user.email,
       role: effectiveRole,
+      department: user.department,
+      semester: user.semester,
+      section: user.section,
       token,
     });
   } catch (err) {

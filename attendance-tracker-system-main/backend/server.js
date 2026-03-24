@@ -9,6 +9,7 @@ const attendanceRoutes = require("./routes/attendanceRoutes");
 const courseRoutes = require("./routes/courseRoutes");
 const classRoutes = require("./routes/classRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use("/api/attendance", attendanceRoutes);
 app.use("/api/courses", courseRoutes);
 app.use("/api/classes", classRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 // Test route
 app.get("/test", (req, res) => {

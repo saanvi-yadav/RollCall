@@ -4,6 +4,8 @@ const Class = require("../models/Class");
 const Attendance = require("../models/Attendance");
 const bcrypt = require("bcryptjs");
 
+const normalizeOptional = (value) => (value ? String(value).trim() : "");
+
 // Get all students
 const getAllStudents = async (req, res) => {
   try {
@@ -33,7 +35,7 @@ const getAllProfessors = async (req, res) => {
 // Create user (student/professor)
 const createUser = async (req, res) => {
   try {
-    const { name, email, role } = req.body;
+    const { name, email, role, password, department, semester, section } = req.body;
 
     if (!name || !email || !role) {
       return res
@@ -48,15 +50,17 @@ const createUser = async (req, res) => {
         .json({ message: "User with this email already exists" });
     }
 
-    // Generate default password
-    const defaultPassword = "Password@123";
-    const hashedPassword = await bcrypt.hash(defaultPassword, 10);
+    const generatedPassword = password?.trim() || "Password@123";
+    const hashedPassword = await bcrypt.hash(generatedPassword, 10);
 
     const user = await User.create({
       name,
       email: email.toLowerCase(),
       password: hashedPassword,
       role,
+      department: normalizeOptional(department),
+      semester: role === "student" ? normalizeOptional(semester) : "",
+      section: role === "student" ? normalizeOptional(section).toUpperCase() : "",
     });
 
     res.status(201).json({
@@ -64,7 +68,12 @@ const createUser = async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
-      message: `User created with default password: ${defaultPassword}`,
+      department: user.department,
+      semester: user.semester,
+      section: user.section,
+      message: password
+        ? "User created successfully"
+        : `User created with default password: ${generatedPassword}`,
     });
   } catch (err) {
     console.error("CreateUser error:", err);
@@ -76,7 +85,7 @@ const createUser = async (req, res) => {
 const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, role } = req.body;
+    const { name, email, role, password, department, semester, section } = req.body;
 
     const user = await User.findById(id);
     if (!user) {
@@ -95,9 +104,30 @@ const updateUser = async (req, res) => {
       user.email = email.toLowerCase();
     }
     if (role) user.role = role;
+    if (password && password.trim()) {
+      user.password = await bcrypt.hash(password.trim(), 10);
+    }
+    if (department !== undefined) user.department = normalizeOptional(department);
+
+    const effectiveRole = role || user.role;
+    if (effectiveRole === "student") {
+      if (semester !== undefined) user.semester = normalizeOptional(semester);
+      if (section !== undefined) user.section = normalizeOptional(section).toUpperCase();
+    } else {
+      user.semester = "";
+      user.section = "";
+    }
 
     await user.save();
-    res.json(user);
+    res.json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      department: user.department,
+      semester: user.semester,
+      section: user.section,
+    });
   } catch (err) {
     console.error("UpdateUser error:", err);
     res.status(500).json({ message: err.message || "Failed to update user" });
@@ -128,12 +158,21 @@ const getDashboardStats = async (req, res) => {
     const totalProfessors = await User.countDocuments({ role: "professor" });
     const totalCourses = await Course.countDocuments();
     const totalClasses = await Class.countDocuments();
+    const attendanceRecords = await Attendance.find();
+    const presentRecords = attendanceRecords.filter(
+      (record) => record.status === "present",
+    ).length;
+    const averageAttendance =
+      attendanceRecords.length === 0
+        ? 0
+        : Number(((presentRecords / attendanceRecords.length) * 100).toFixed(2));
 
     res.json({
       totalStudents,
       totalProfessors,
       totalCourses,
       totalClasses,
+      averageAttendance,
     });
   } catch (err) {
     console.error("GetDashboardStats error:", err);

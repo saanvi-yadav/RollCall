@@ -6,6 +6,11 @@ const classSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    courseRef: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Course",
+      default: null,
+    },
     course: {
       type: String,
       required: true,
@@ -29,6 +34,23 @@ const classSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
+    scheduleDate: {
+      type: Date,
+      required: true,
+    },
+    startTime: {
+      type: String,
+      required: true,
+    },
+    endTime: {
+      type: String,
+      required: true,
+    },
+    room: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   { timestamps: true },
 );

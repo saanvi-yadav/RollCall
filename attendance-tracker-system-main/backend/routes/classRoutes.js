@@ -7,9 +7,12 @@ const {
   getProfessorClasses,
   getStudentClasses,
   createClass,
+  updateClass,
+  deleteClass,
   addStudentToClass,
   getClassStudents,
   markClassAttendance,
+  updateClassAttendance,
 } = require("../controllers/classController");
 
 // Public routes
@@ -22,5 +25,8 @@ router.get("/:classId/students", authMiddleware, getClassStudents);
 router.post("/", authMiddleware, createClass);
 router.post("/add-student", authMiddleware, addStudentToClass);
 router.post("/mark-attendance", authMiddleware, markClassAttendance);
+router.put("/mark-attendance", authMiddleware, updateClassAttendance);
+router.put("/:id", authMiddleware, updateClass);
+router.delete("/:id", authMiddleware, deleteClass);
 
 module.exports = router;

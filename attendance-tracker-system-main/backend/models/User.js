@@ -27,6 +27,21 @@ const userSchema = new mongoose.Schema(
       default: "student",
       required: true,
     },
+    department: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    semester: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    section: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   { timestamps: true },
 );

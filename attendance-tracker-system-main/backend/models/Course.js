@@ -20,6 +20,11 @@ const courseSchema = new mongoose.Schema(
       ref: "User",
     },
     description: String,
+    department: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   { timestamps: true },
 );

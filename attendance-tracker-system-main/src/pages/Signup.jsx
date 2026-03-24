@@ -4,7 +4,7 @@ import AuthLayout from "../layouts/AuthLayout";
 import InputField from "../components/InputField";
 import SelectField from "../components/SelectField";
 import PrimaryButton from "../components/PrimaryButton";
-import { setAuthToken, userAPI } from "../utils/apiClient";
+import { setAuthToken, setCurrentUser, userAPI } from "../utils/apiClient";
 
 const Signup = () => {
   const [name, setName] = useState("");
@@ -43,15 +43,12 @@ const Signup = () => {
       );
       setAuthToken(loginResponse.token);
 
-      localStorage.setItem(
-        "currentUser",
-        JSON.stringify({
-          id: loginResponse._id,
-          name: loginResponse.name,
-          email: loginResponse.email,
-          role: loginResponse.role,
-        }),
-      );
+      setCurrentUser({
+        id: loginResponse._id,
+        name: loginResponse.name,
+        email: loginResponse.email,
+        role: loginResponse.role,
+      });
 
       if (loginResponse.role === "student") navigate("/student/dashboard");
       else if (loginResponse.role === "professor")
