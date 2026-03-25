@@ -4,7 +4,10 @@ const Class = require("../models/Class");
 const Attendance = require("../models/Attendance");
 const bcrypt = require("bcryptjs");
 
+const DEFAULT_ADMIN_EMAIL = "admin@gmail.com";
 const normalizeOptional = (value) => (value ? String(value).trim() : "");
+const getEmailPrefix = (email = "") =>
+  String(email).trim().toLowerCase().split("@")[0] || "";
 
 // Get all students
 const getAllStudents = async (req, res) => {
@@ -43,6 +46,10 @@ const createUser = async (req, res) => {
         .json({ message: "Name, email, and role are required" });
     }
 
+    if (role === "admin") {
+      return res.status(403).json({ message: "Only the default admin account is allowed" });
+    }
+
     const userExists = await User.findOne({ email: email.toLowerCase() });
     if (userExists) {
       return res
@@ -56,6 +63,7 @@ const createUser = async (req, res) => {
     const user = await User.create({
       name,
       email: email.toLowerCase(),
+      username: getEmailPrefix(email),
       password: hashedPassword,
       role,
       department: normalizeOptional(department),
@@ -68,6 +76,7 @@ const createUser = async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      username: user.username,
       department: user.department,
       semester: user.semester,
       section: user.section,
@@ -92,6 +101,10 @@ const updateUser = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
+    if (user.email === DEFAULT_ADMIN_EMAIL || (role || user.role) === "admin") {
+      return res.status(403).json({ message: "Default admin account cannot be edited here" });
+    }
+
     if (name) user.name = name;
     if (email) {
       const emailExists = await User.findOne({
@@ -102,6 +115,7 @@ const updateUser = async (req, res) => {
         return res.status(400).json({ message: "Email already in use" });
       }
       user.email = email.toLowerCase();
+      user.username = getEmailPrefix(email);
     }
     if (role) user.role = role;
     if (password && password.trim()) {
@@ -124,6 +138,7 @@ const updateUser = async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      username: user.username,
       department: user.department,
       semester: user.semester,
       section: user.section,
@@ -138,6 +153,12 @@ const updateUser = async (req, res) => {
 const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
+    const existingUser = await User.findById(id);
+
+    if (existingUser?.email === DEFAULT_ADMIN_EMAIL || existingUser?.role === "admin") {
+      return res.status(403).json({ message: "Default admin account cannot be deleted" });
+    }
+
     const user = await User.findByIdAndDelete(id);
 
     if (!user) {

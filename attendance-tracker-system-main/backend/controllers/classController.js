@@ -17,6 +17,10 @@ const endOfDay = (value) => {
 
 const normalizeValue = (value) => (value ? String(value).trim() : "");
 const normalizeSection = (value) => normalizeValue(value).toUpperCase();
+const getEmailPrefix = (email = "") =>
+  String(email).trim().toLowerCase().split("@")[0] || "";
+const compareAcademicIds = (left = "", right = "") =>
+  left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
 
 const validateClassStudents = async (studentIds = [], semester, section) => {
   if (!Array.isArray(studentIds) || studentIds.length === 0) {
@@ -282,14 +286,21 @@ const getClassStudents = async (req, res) => {
     const { classId } = req.params;
     const classData = await Class.findById(classId).populate(
       "students",
-      "name email _id semester section department",
+      "name email _id semester section department username",
     );
 
     if (!classData) {
       return res.status(404).json({ message: "Class not found" });
     }
 
-    res.json(classData.students);
+    const sortedStudents = classData.students
+      .map((student) => ({
+        ...student.toObject(),
+        academicId: student.username || getEmailPrefix(student.email),
+      }))
+      .sort((a, b) => compareAcademicIds(a.academicId, b.academicId));
+
+    res.json(sortedStudents);
   } catch (err) {
     console.error("GetClassStudents error:", err);
     res.status(500).json({ message: err.message || "Failed to get students" });

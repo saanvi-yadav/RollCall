@@ -362,6 +362,34 @@
   background: rgba(99, 102, 241, 0.08);
 }
 
+[data-theme="dark"] .glass-panel,
+[data-theme="dark"] .profile-section,
+[data-theme="dark"] .modal,
+[data-theme="dark"] .stat-card {
+  box-shadow: 0 24px 50px rgba(2, 6, 23, 0.35);
+}
+
+[data-theme="dark"] .data-table th {
+  background: rgba(99, 102, 241, 0.16);
+  color: #f8fafc;
+  border-bottom-color: rgba(148, 163, 184, 0.18);
+}
+
+[data-theme="dark"] .data-table tbody tr {
+  color: #e2e8f0;
+}
+
+[data-theme="dark"] .data-table tbody tr:hover {
+  background: rgba(99, 102, 241, 0.14);
+}
+
+[data-theme="dark"] .form-group input,
+[data-theme="dark"] .form-group select {
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
 .code-cell {
   font-family: "Courier New", monospace;
   background: rgba(99, 102, 241, 0.1);

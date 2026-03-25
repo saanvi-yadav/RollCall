@@ -22,12 +22,6 @@ function ProtectedRoute({ allowedRoles }) {
 }
 
 function PublicOnlyRoute({ children }) {
-  const user = getCurrentUser();
-
-  if (isAuthenticated() && user?.role) {
-    return <Navigate to={`/${user.role}/dashboard`} replace />;
-  }
-
   return children;
 }
 

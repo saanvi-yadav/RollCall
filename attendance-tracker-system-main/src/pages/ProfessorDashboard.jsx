@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../styles/professor-dashboard.css";
+import { useTheme } from "../context/ThemeContext";
 import {
   attendanceAPI,
   classAPI,
@@ -9,6 +10,7 @@ import {
   courseAPI,
   getCurrentUser,
   notificationAPI,
+  userAPI,
 } from "../utils/apiClient";
 
 const toDateInputValue = (dateValue) => {
@@ -21,6 +23,12 @@ const getPercentageColor = (percentage) => {
   if (percentage >= 75) return "#f59e0b";
   return "#ef4444";
 };
+
+const getAcademicId = (student = {}) =>
+  student.academicId || student.username || student.email?.split("@")[0] || "";
+
+const compareAcademicIds = (left = "", right = "") =>
+  left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
 
 const getNotificationFilterLabel = (notification) => {
   const parts = [];
@@ -43,6 +51,7 @@ const getNotificationFilterLabel = (notification) => {
 
 function ProfessorDashboard() {
   const navigate = useNavigate();
+  const { isDark, toggleTheme } = useTheme();
   const currentUser = getCurrentUser();
 
   const [professorData, setProfessorData] = useState(null);
@@ -71,32 +80,46 @@ function ProfessorDashboard() {
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [changePasswordLoading, setChangePasswordLoading] = useState(false);
+  const [changePasswordError, setChangePasswordError] = useState("");
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState("");
+  const [changePasswordForm, setChangePasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmNewPassword: "",
+  });
 
   const submissionProgress = students.length
     ? Math.round((Object.keys(attendanceStatus).length / students.length) * 100)
     : 0;
   const filteredAttendanceRecords = attendanceRecords.filter((record) => {
     const classMatches = selectedClass?._id ? record.classId === selectedClass._id : true;
-    const dateMatches = selectedDate ? toDateInputValue(record.date) === selectedDate : true;
-    return classMatches && dateMatches;
+    return classMatches;
   });
   const lowAttendanceCount = reportData
     ? reportData.students.filter((student) => student.attendancePercentage < 75).length
     : 0;
+  const sortedStudents = useMemo(
+    () =>
+      [...students].sort((a, b) => compareAcademicIds(getAcademicId(a), getAcademicId(b))),
+    [students],
+  );
 
-  const refreshAttendanceRecords = async () => {
+  const refreshAttendanceRecords = useCallback(async () => {
     setRecordsLoading(true);
     try {
-      const recordsResponse = await attendanceAPI.getAllAttendanceRecords();
+      const filters = selectedClass?._id ? { classId: selectedClass._id } : {};
+      const recordsResponse = await attendanceAPI.getAllAttendanceRecords(filters);
       setAttendanceRecords(recordsResponse);
     } catch (err) {
       setError(err.message || "Failed to load attendance records");
     } finally {
       setRecordsLoading(false);
     }
-  };
+  }, [selectedClass?._id]);
 
-  const loadReport = async (classId) => {
+  const loadReport = useCallback(async (classId) => {
     if (!classId) {
       setReportData(null);
       return;
@@ -111,7 +134,7 @@ function ProfessorDashboard() {
     } finally {
       setReportLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     const loadProfessorData = async () => {
@@ -128,7 +151,8 @@ function ProfessorDashboard() {
         setSelectedClass(initialClass);
         setProfessorData({
           name: currentUser?.name || "Professor",
-          professorId: currentUser?.id ? `PROF${currentUser.id.slice(-6)}` : "Not Available",
+          professorId:
+            currentUser?.username || currentUser?.email?.split("@")[0] || "Not Available",
           department: coursesResponse[0]?.department || initialClass?.course || "Assigned via classes",
           profilePhoto: `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser?.name || "Professor")}&size=150&background=f59e0b&color=fff`,
         });
@@ -146,7 +170,14 @@ function ProfessorDashboard() {
     };
 
     loadProfessorData();
-  }, [currentUser?.id, currentUser?.name]);
+  }, [
+    currentUser?.email,
+    currentUser?.id,
+    currentUser?.name,
+    currentUser?.username,
+    loadReport,
+    refreshAttendanceRecords,
+  ]);
 
   useEffect(() => {
     const loadStudents = async () => {
@@ -159,17 +190,14 @@ function ProfessorDashboard() {
       try {
         const studentsResponse = await classAPI.getClassStudents(selectedClass._id);
         setStudents(studentsResponse);
-        setAttendanceStatus((prev) => {
-          if (Object.keys(prev).length > 0) {
-            return prev;
-          }
-
+        if (!(activeTab === "edit" && editingRecord?.classId === selectedClass._id)) {
           const initialStatus = {};
           studentsResponse.forEach((student) => {
             initialStatus[student._id] = "";
           });
-          return initialStatus;
-        });
+          setAttendanceStatus(initialStatus);
+        }
+        await refreshAttendanceRecords();
         await loadReport(selectedClass._id);
       } catch (err) {
         console.error("Error loading students:", err);
@@ -178,7 +206,7 @@ function ProfessorDashboard() {
     };
 
     loadStudents();
-  }, [selectedClass?._id]);
+  }, [activeTab, editingRecord?.classId, loadReport, refreshAttendanceRecords, selectedClass?._id]);
 
   const handleAttendanceChange = (studentId, status) => {
     setAttendanceStatus((prev) => ({
@@ -232,18 +260,24 @@ function ProfessorDashboard() {
 
   const startEditRecord = async (record) => {
     const sessionDate = toDateInputValue(record.date);
-    setSelectedDate(sessionDate);
-
-    const matchingClass =
-      classes.find((classItem) => classItem._id === record.classId) || selectedClass;
-    setSelectedClass(matchingClass);
 
     try {
-      const session = await attendanceAPI.getClassAttendanceSession(record.classId, sessionDate);
+      const [session, studentsResponse] = await Promise.all([
+        attendanceAPI.getClassAttendanceSession(record.classId, sessionDate),
+        classAPI.getClassStudents(record.classId),
+      ]);
+      const matchingClass =
+        classes.find((classItem) => classItem._id === record.classId) || selectedClass;
       const nextStatus = {};
+      studentsResponse.forEach((student) => {
+        nextStatus[student._id] = "";
+      });
       session.students.forEach((student) => {
         nextStatus[student.studentId] = student.status;
       });
+      setSelectedDate(sessionDate);
+      setSelectedClass(matchingClass);
+      setStudents(studentsResponse);
       setAttendanceStatus(nextStatus);
       setEditingRecord({
         ...record,
@@ -288,6 +322,58 @@ function ProfessorDashboard() {
     navigate("/login");
   };
 
+  const handleChangePasswordOpen = () => {
+    setShowChangePasswordModal(true);
+    setShowProfileMenu(false);
+    setChangePasswordError("");
+    setChangePasswordSuccess("");
+  };
+
+  const handleChangePasswordSubmit = async (event) => {
+    event.preventDefault();
+    setChangePasswordError("");
+    setChangePasswordSuccess("");
+
+    if (
+      !changePasswordForm.currentPassword ||
+      !changePasswordForm.newPassword ||
+      !changePasswordForm.confirmNewPassword
+    ) {
+      setChangePasswordError("All fields are required");
+      return;
+    }
+
+    if (changePasswordForm.newPassword !== changePasswordForm.confirmNewPassword) {
+      setChangePasswordError("New passwords do not match");
+      return;
+    }
+
+    if (changePasswordForm.newPassword.length < 6) {
+      setChangePasswordError("New password must be at least 6 characters");
+      return;
+    }
+
+    setChangePasswordLoading(true);
+
+    try {
+      await userAPI.changePassword(
+        changePasswordForm.currentPassword,
+        changePasswordForm.newPassword,
+      );
+      setChangePasswordSuccess("Password changed successfully!");
+      setChangePasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmNewPassword: "",
+      });
+      setTimeout(() => setShowChangePasswordModal(false), 1500);
+    } catch (err) {
+      setChangePasswordError(err.message || "Failed to change password");
+    } finally {
+      setChangePasswordLoading(false);
+    }
+  };
+
   const handleSendAnnouncement = async () => {
     try {
       await notificationAPI.createNotification(notificationForm);
@@ -314,6 +400,13 @@ function ProfessorDashboard() {
           <h1>📚 Professor Portal</h1>
         </div>
         <div className="topbar-right">
+          <button
+            className="theme-toggle-btn"
+            onClick={toggleTheme}
+            title={`Switch to ${isDark ? "light" : "dark"} mode`}
+          >
+            {isDark ? "☀️" : "🌙"}
+          </button>
           <div className="profile-menu-wrapper">
             <button
               className="profile-menu-btn"
@@ -324,6 +417,9 @@ function ProfessorDashboard() {
             </button>
             {showProfileMenu && (
               <div className="profile-menu-dropdown">
+                <button className="menu-item" onClick={handleChangePasswordOpen}>
+                  Change Password
+                </button>
                 <button className="menu-item" onClick={handleLogout}>
                   🚪 Logout
                 </button>
@@ -332,6 +428,78 @@ function ProfessorDashboard() {
           </div>
         </div>
       </div>
+
+      {showChangePasswordModal && (
+        <div className="modal-overlay" onClick={() => setShowChangePasswordModal(false)}>
+          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Change Password</h2>
+              <button className="modal-close" onClick={() => setShowChangePasswordModal(false)}>
+                X
+              </button>
+            </div>
+
+            <form onSubmit={handleChangePasswordSubmit} className="change-password-form">
+              {changePasswordError && <div className="form-error">{changePasswordError}</div>}
+              {changePasswordSuccess && (
+                <div className="form-success">{changePasswordSuccess}</div>
+              )}
+
+              <div className="form-group">
+                <label htmlFor="profCurrentPassword">Current Password</label>
+                <input
+                  id="profCurrentPassword"
+                  type="password"
+                  value={changePasswordForm.currentPassword}
+                  onChange={(event) =>
+                    setChangePasswordForm((prev) => ({
+                      ...prev,
+                      currentPassword: event.target.value,
+                    }))
+                  }
+                  disabled={changePasswordLoading}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="profNewPassword">New Password</label>
+                <input
+                  id="profNewPassword"
+                  type="password"
+                  value={changePasswordForm.newPassword}
+                  onChange={(event) =>
+                    setChangePasswordForm((prev) => ({
+                      ...prev,
+                      newPassword: event.target.value,
+                    }))
+                  }
+                  disabled={changePasswordLoading}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="profConfirmPassword">Confirm New Password</label>
+                <input
+                  id="profConfirmPassword"
+                  type="password"
+                  value={changePasswordForm.confirmNewPassword}
+                  onChange={(event) =>
+                    setChangePasswordForm((prev) => ({
+                      ...prev,
+                      confirmNewPassword: event.target.value,
+                    }))
+                  }
+                  disabled={changePasswordLoading}
+                />
+              </div>
+
+              <button className="btn-submit" type="submit" disabled={changePasswordLoading}>
+                {changePasswordLoading ? "Changing..." : "Change Password"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="error-banner">
@@ -716,38 +884,47 @@ function ProfessorDashboard() {
                   </button>
                 </div>
 
-                <div className="student-list">
-                  {students.map((student, index) => (
-                    <div
-                      key={student._id}
-                      className="student-item"
-                      style={{ animationDelay: `${index * 0.05}s` }}
-                    >
-                      <div className="student-info">
-                        <div className="student-name">{student.name}</div>
-                        <div className="student-rollno">Email: {student.email}</div>
-                      </div>
-
-                      <div className="attendance-buttons">
-                        <button
-                          className={`attendance-btn present ${
-                            attendanceStatus[student._id] === "present" ? "selected" : ""
-                          }`}
-                          onClick={() => handleAttendanceChange(student._id, "present")}
-                        >
-                          ✓ Present
-                        </button>
-                        <button
-                          className={`attendance-btn absent ${
-                            attendanceStatus[student._id] === "absent" ? "selected" : ""
-                          }`}
-                          onClick={() => handleAttendanceChange(student._id, "absent")}
-                        >
-                          ✕ Absent
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="records-table-wrapper">
+                  <table className="records-table">
+                    <thead>
+                      <tr>
+                        <th>Student ID</th>
+                        <th>Student Name</th>
+                        <th>Attendance</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedStudents.map((student, index) => (
+                        <tr key={student._id} style={{ animationDelay: `${index * 0.05}s` }}>
+                          <td>{getAcademicId(student)}</td>
+                          <td>
+                            <div className="student-name">{student.name}</div>
+                            <div className="student-rollno">{student.email}</div>
+                          </td>
+                          <td>
+                            <div className="attendance-buttons">
+                              <button
+                                className={`attendance-btn present ${
+                                  attendanceStatus[student._id] === "present" ? "selected" : ""
+                                }`}
+                                onClick={() => handleAttendanceChange(student._id, "present")}
+                              >
+                                ✓ Present
+                              </button>
+                              <button
+                                className={`attendance-btn absent ${
+                                  attendanceStatus[student._id] === "absent" ? "selected" : ""
+                                }`}
+                                onClick={() => handleAttendanceChange(student._id, "absent")}
+                              >
+                                ✕ Absent
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
 
                 <div className="submit-section">
@@ -997,36 +1174,49 @@ function ProfessorDashboard() {
 
                     <div className="edit-student-list">
                       <h4>Update Student Attendance</h4>
-                      {students.map((student, index) => (
-                        <div
-                          key={student._id}
-                          className="edit-student-item"
-                          style={{ animationDelay: `${index * 0.05}s` }}
-                        >
-                          <div className="edit-student-info">
-                            <span className="edit-student-name">{student.name}</span>
-                            <span className="edit-student-roll">{student.email}</span>
-                          </div>
-                          <div className="edit-attendance-buttons">
-                            <button
-                              className={`edit-btn present ${
-                                attendanceStatus[student._id] === "present" ? "selected" : ""
-                              }`}
-                              onClick={() => handleAttendanceChange(student._id, "present")}
-                            >
-                              ✓ Present
-                            </button>
-                            <button
-                              className={`edit-btn absent ${
-                                attendanceStatus[student._id] === "absent" ? "selected" : ""
-                              }`}
-                              onClick={() => handleAttendanceChange(student._id, "absent")}
-                            >
-                              ✕ Absent
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                      <div className="records-table-wrapper">
+                        <table className="records-table">
+                          <thead>
+                            <tr>
+                              <th>Student ID</th>
+                              <th>Student Name</th>
+                              <th>Attendance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sortedStudents.map((student, index) => (
+                              <tr key={student._id} style={{ animationDelay: `${index * 0.05}s` }}>
+                                <td>{getAcademicId(student)}</td>
+                                <td>
+                                  <span className="edit-student-name">{student.name}</span>
+                                  <br />
+                                  <span className="edit-student-roll">{student.email}</span>
+                                </td>
+                                <td>
+                                  <div className="edit-attendance-buttons">
+                                    <button
+                                      className={`edit-btn present ${
+                                        attendanceStatus[student._id] === "present" ? "selected" : ""
+                                      }`}
+                                      onClick={() => handleAttendanceChange(student._id, "present")}
+                                    >
+                                      ✓ Present
+                                    </button>
+                                    <button
+                                      className={`edit-btn absent ${
+                                        attendanceStatus[student._id] === "absent" ? "selected" : ""
+                                      }`}
+                                      onClick={() => handleAttendanceChange(student._id, "absent")}
+                                    >
+                                      ✕ Absent
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
 
                     <div className="edit-actions">

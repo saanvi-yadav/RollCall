@@ -98,6 +98,13 @@ export const userAPI = {
       body: JSON.stringify({ currentPassword, newPassword }),
     });
   },
+
+  updateProfile: async (profileData) => {
+    return apiCall("/users/profile", {
+      method: "PUT",
+      body: JSON.stringify(profileData),
+    });
+  },
 };
 
 /**
@@ -315,6 +322,21 @@ export const notificationAPI = {
     return apiCall("/notifications", {
       method: "POST",
       body: JSON.stringify(notificationData),
+    });
+  },
+};
+
+export const settingsAPI = {
+  getAcademicConfig: async () => {
+    return apiCall("/academic-config", {
+      method: "GET",
+    });
+  },
+
+  updateAcademicConfig: async (configData) => {
+    return apiCall("/academic-config", {
+      method: "PUT",
+      body: JSON.stringify(configData),
     });
   },
 };

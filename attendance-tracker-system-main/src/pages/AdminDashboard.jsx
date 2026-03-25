@@ -10,12 +10,18 @@ import {
   courseAPI,
   getCurrentUser,
   notificationAPI,
+  settingsAPI,
 } from "../utils/apiClient";
 
 const emptyUserForm = {
   name: "",
   email: "",
   password: "",
+  department: "",
+  semester: "",
+  section: "",
+};
+const emptyAcademicItemForm = {
   department: "",
   semester: "",
   section: "",
@@ -71,6 +77,11 @@ function AdminDashboard() {
   const [professors, setProfessors] = useState([]);
   const [courses, setCourses] = useState([]);
   const [classes, setClasses] = useState([]);
+  const [academicConfig, setAcademicConfig] = useState({
+    departments: [],
+    semesters: [],
+    sections: [],
+  });
   const [statsData, setStatsData] = useState({
     totalStudents: 0,
     totalProfessors: 0,
@@ -99,10 +110,11 @@ function AdminDashboard() {
   const [modalType, setModalType] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState({});
+  const [academicItemForm, setAcademicItemForm] = useState(emptyAcademicItemForm);
 
   const adminData = {
     name: currentUser?.name || "Admin User",
-    adminId: currentUser?.id ? `ADMIN${currentUser.id.slice(-6)}` : "ADMIN001",
+    adminId: "ADM67",
     email: currentUser?.email || "admin@attendance.com",
     role: "System Admin",
     profilePhoto: `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser?.name || "Admin User")}&size=150&background=4f46e5&color=fff`,
@@ -135,18 +147,19 @@ function AdminDashboard() {
     [students],
   );
 
+  const departmentOptions = useMemo(
+    () => academicConfig.departments || [],
+    [academicConfig.departments],
+  );
+
   const semesterOptions = useMemo(
-    () =>
-      [...new Set(students.map((student) => normalizeValue(student.semester)).filter(Boolean))].sort(
-        (a, b) => a.localeCompare(b, undefined, { numeric: true }),
-      ),
-    [students],
+    () => academicConfig.semesters || [],
+    [academicConfig.semesters],
   );
 
   const sectionOptions = useMemo(
-    () =>
-      [...new Set(students.map((student) => normalizeSection(student.section)).filter(Boolean))].sort(),
-    [students],
+    () => academicConfig.sections || [],
+    [academicConfig.sections],
   );
 
   const filteredStudentOptions = useMemo(() => {
@@ -163,19 +176,25 @@ function AdminDashboard() {
   const loadDashboardData = async () => {
     setLoading(true);
     try {
-      const [studentsResponse, professorsResponse, statsResponse, coursesResponse, classesResponse] =
+      const [studentsResponse, professorsResponse, statsResponse, coursesResponse, classesResponse, academicConfigResponse] =
         await Promise.all([
           adminAPI.getAllStudents(),
           adminAPI.getAllProfessors(),
           adminAPI.getDashboardStats(),
           courseAPI.getAllCourses(),
           classAPI.getAllClasses(),
+          settingsAPI.getAcademicConfig(),
         ]);
       setStudents(studentsResponse);
       setProfessors(professorsResponse);
       setStatsData(statsResponse);
       setCourses(coursesResponse);
       setClasses(classesResponse);
+      setAcademicConfig({
+        departments: academicConfigResponse.departments || [],
+        semesters: academicConfigResponse.semesters || [],
+        sections: academicConfigResponse.sections || [],
+      });
       const attendanceResponse = await attendanceAPI.getAllAttendanceRecords();
       const notificationsResponse = await notificationAPI.getNotifications();
       setAttendanceRecords(attendanceResponse);
@@ -302,6 +321,14 @@ function AdminDashboard() {
     setAttendanceFilters((prev) => ({ ...prev, [name]: value }));
   };
 
+  const handleAcademicItemChange = (event) => {
+    const { name, value } = event.target;
+    setAcademicItemForm((prev) => ({
+      ...prev,
+      [name]: name === "section" ? value.toUpperCase() : value,
+    }));
+  };
+
   const toggleTargetRole = (role) => {
     setNotificationForm((prev) => ({
       ...prev,
@@ -368,6 +395,65 @@ function AdminDashboard() {
       ...prev,
       students: (prev.students || []).filter((studentId) => !filteredIds.has(studentId)),
     }));
+  };
+
+  const handleUpdateAcademicConfig = async (nextConfig) => {
+    try {
+      const response = await settingsAPI.updateAcademicConfig(nextConfig);
+      setAcademicConfig({
+        departments: response.departments || [],
+        semesters: response.semesters || [],
+        sections: response.sections || [],
+      });
+      setAcademicItemForm(emptyAcademicItemForm);
+      setSuccessMessage("Academic configuration updated successfully");
+    } catch (err) {
+      setError(err.message || "Failed to update academic configuration");
+    }
+  };
+
+  const handleAddAcademicItem = async (type) => {
+    const value =
+      type === "section"
+        ? normalizeSection(academicItemForm.section)
+        : normalizeValue(academicItemForm[type]);
+
+    if (!value) {
+      setError(`Please enter a ${type}`);
+      return;
+    }
+
+    await handleUpdateAcademicConfig({
+      departments:
+        type === "department"
+          ? [...departmentOptions, value]
+          : departmentOptions,
+      semesters:
+        type === "semester"
+          ? [...semesterOptions, value]
+          : semesterOptions,
+      sections:
+        type === "section"
+          ? [...sectionOptions, value]
+          : sectionOptions,
+    });
+  };
+
+  const handleRemoveAcademicItem = async (type, value) => {
+    await handleUpdateAcademicConfig({
+      departments:
+        type === "department"
+          ? departmentOptions.filter((item) => item !== value)
+          : departmentOptions,
+      semesters:
+        type === "semester"
+          ? semesterOptions.filter((item) => item !== value)
+          : semesterOptions,
+      sections:
+        type === "section"
+          ? sectionOptions.filter((item) => item !== value)
+          : sectionOptions,
+    });
   };
 
   const handleSaveUser = async (role) => {
@@ -597,6 +683,7 @@ function AdminDashboard() {
             <button className={`nav-tab ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}><span className="tab-icon">Courses</span></button>
             <button className={`nav-tab ${activeTab === "classes" ? "active" : ""}`} onClick={() => setActiveTab("classes")}><span className="tab-icon">Schedules</span></button>
             <button className={`nav-tab ${activeTab === "attendance" ? "active" : ""}`} onClick={() => setActiveTab("attendance")}><span className="tab-icon">Attendance</span></button>
+            <button className={`nav-tab ${activeTab === "configuration" ? "active" : ""}`} onClick={() => setActiveTab("configuration")}><span className="tab-icon">Configuration</span></button>
             <button className={`nav-tab ${activeTab === "announcements" ? "active" : ""}`} onClick={() => setActiveTab("announcements")}><span className="tab-icon">Announcements</span></button>
           </div>
 
@@ -839,6 +926,95 @@ function AdminDashboard() {
             </div>
           )}
 
+          {activeTab === "configuration" && (
+            <div className="tab-content">
+              <div className="glass-panel">
+                <div className="section-header">
+                  <h3>Academic Configuration</h3>
+                  <p className="section-subtitle">Manage active departments, semesters, and sections for the whole college</p>
+                </div>
+
+                <div className="form-group-container" style={{ marginBottom: "1.5rem" }}>
+                  <div className="form-group">
+                    <label>Add Department</label>
+                    <input
+                      name="department"
+                      value={academicItemForm.department}
+                      onChange={handleAcademicItemChange}
+                      placeholder="Computer Science"
+                    />
+                    <button className="add-btn" type="button" onClick={() => handleAddAcademicItem("department")}>
+                      Add Department
+                    </button>
+                  </div>
+                  <div className="form-group">
+                    <label>Add Semester</label>
+                    <input
+                      name="semester"
+                      value={academicItemForm.semester}
+                      onChange={handleAcademicItemChange}
+                      placeholder="Semester 4"
+                    />
+                    <button className="add-btn" type="button" onClick={() => handleAddAcademicItem("semester")}>
+                      Add Semester
+                    </button>
+                  </div>
+                  <div className="form-group">
+                    <label>Add Section</label>
+                    <input
+                      name="section"
+                      value={academicItemForm.section}
+                      onChange={handleAcademicItemChange}
+                      placeholder="A"
+                    />
+                    <button className="add-btn" type="button" onClick={() => handleAddAcademicItem("section")}>
+                      Add Section
+                    </button>
+                  </div>
+                </div>
+
+                <div className="stats-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+                  <div className="glass-panel" style={{ marginBottom: 0 }}>
+                    <div className="section-header">
+                      <h3>Departments</h3>
+                    </div>
+                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                      {departmentOptions.length > 0 ? departmentOptions.map((item) => (
+                        <button key={item} className="action-btn edit" type="button" onClick={() => handleRemoveAcademicItem("department", item)}>
+                          {item} ×
+                        </button>
+                      )) : <div className="no-data">No departments configured yet.</div>}
+                    </div>
+                  </div>
+                  <div className="glass-panel" style={{ marginBottom: 0 }}>
+                    <div className="section-header">
+                      <h3>Semesters</h3>
+                    </div>
+                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                      {semesterOptions.length > 0 ? semesterOptions.map((item) => (
+                        <button key={item} className="action-btn edit" type="button" onClick={() => handleRemoveAcademicItem("semester", item)}>
+                          {item} ×
+                        </button>
+                      )) : <div className="no-data">No semesters configured yet.</div>}
+                    </div>
+                  </div>
+                  <div className="glass-panel" style={{ marginBottom: 0 }}>
+                    <div className="section-header">
+                      <h3>Sections</h3>
+                    </div>
+                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                      {sectionOptions.length > 0 ? sectionOptions.map((item) => (
+                        <button key={item} className="action-btn edit" type="button" onClick={() => handleRemoveAcademicItem("section", item)}>
+                          {item} ×
+                        </button>
+                      )) : <div className="no-data">No sections configured yet.</div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeTab === "announcements" && (
             <div className="tab-content">
               <div className="glass-panel">
@@ -1013,17 +1189,32 @@ function AdminDashboard() {
                   </div>
                   <div className="form-group">
                     <label>Department</label>
-                    <input type="text" name="department" value={formData.department || ""} onChange={handleInputChange} />
+                    <select name="department" value={formData.department || ""} onChange={handleInputChange}>
+                      <option value="">Select department</option>
+                      {departmentOptions.map((department) => (
+                        <option key={department} value={department}>{department}</option>
+                      ))}
+                    </select>
                   </div>
                   {modalType === "student" && (
                     <>
                       <div className="form-group">
                         <label>Semester</label>
-                        <input type="text" name="semester" value={formData.semester || ""} onChange={handleInputChange} />
+                        <select name="semester" value={formData.semester || ""} onChange={handleInputChange}>
+                          <option value="">Select semester</option>
+                          {semesterOptions.map((semester) => (
+                            <option key={semester} value={semester}>{semester}</option>
+                          ))}
+                        </select>
                       </div>
                       <div className="form-group">
                         <label>Section</label>
-                        <input type="text" name="section" value={formData.section || ""} onChange={handleInputChange} />
+                        <select name="section" value={formData.section || ""} onChange={handleInputChange}>
+                          <option value="">Select section</option>
+                          {sectionOptions.map((section) => (
+                            <option key={section} value={section}>{section}</option>
+                          ))}
+                        </select>
                       </div>
                     </>
                   )}
@@ -1042,11 +1233,21 @@ function AdminDashboard() {
                   </div>
                   <div className="form-group">
                     <label>Semester</label>
-                    <input type="number" name="semester" value={formData.semester || ""} onChange={handleInputChange} />
+                    <select name="semester" value={formData.semester || ""} onChange={handleInputChange}>
+                      <option value="">Select semester</option>
+                      {semesterOptions.map((semester) => (
+                        <option key={semester} value={semester}>{semester}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="form-group">
                     <label>Department</label>
-                    <input name="department" value={formData.department || ""} onChange={handleInputChange} />
+                    <select name="department" value={formData.department || ""} onChange={handleInputChange}>
+                      <option value="">Select department</option>
+                      {departmentOptions.map((department) => (
+                        <option key={department} value={department}>{department}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="form-group">
                     <label>Assigned Professor</label>
@@ -1085,11 +1286,21 @@ function AdminDashboard() {
                   </div>
                   <div className="form-group">
                     <label>Semester</label>
-                    <input name="semester" value={formData.semester || ""} onChange={handleInputChange} />
+                    <select name="semester" value={formData.semester || ""} onChange={handleInputChange}>
+                      <option value="">Select semester</option>
+                      {semesterOptions.map((semester) => (
+                        <option key={semester} value={semester}>{semester}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="form-group">
                     <label>Section</label>
-                    <input name="section" value={formData.section || ""} onChange={handleInputChange} />
+                    <select name="section" value={formData.section || ""} onChange={handleInputChange}>
+                      <option value="">Select section</option>
+                      {sectionOptions.map((section) => (
+                        <option key={section} value={section}>{section}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="form-group">
                     <label>Professor</label>

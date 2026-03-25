@@ -3,9 +3,12 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const VALID_ROLES = ["student", "professor", "admin"];
+const DEFAULT_ADMIN_EMAIL = "admin@gmail.com";
+const DEFAULT_ADMIN_PASSWORD = "admin123";
 
 const normalizeEmail = (email = "") => email.trim().toLowerCase();
 const normalizeOptional = (value = "") => value.trim();
+const getEmailPrefix = (email = "") => normalizeEmail(email).split("@")[0] || "";
 
 const registerUser = async (req, res) => {
   try {
@@ -24,6 +27,12 @@ const registerUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid role selected" });
     }
 
+    if (normalizedRole === "admin") {
+      return res.status(403).json({
+        message: "Admin account is fixed for this system and cannot be registered",
+      });
+    }
+
     const userExists = await User.findOne({ email: normalizedEmail });
     if (userExists) {
       return res.status(400).json({ message: "User already exists" });
@@ -36,6 +45,7 @@ const registerUser = async (req, res) => {
       email: normalizedEmail,
       password: hashedPassword,
       role: normalizedRole,
+      username: getEmailPrefix(normalizedEmail),
       department: normalizeOptional(department || ""),
       semester: normalizedRole === "student" ? normalizeOptional(semester || "") : "",
       section:
@@ -83,6 +93,15 @@ const loginUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid role selected" });
     }
 
+    if (selectedRole === "admin") {
+      if (
+        normalizedEmail !== DEFAULT_ADMIN_EMAIL ||
+        password !== DEFAULT_ADMIN_PASSWORD
+      ) {
+        return res.status(401).json({ message: "Invalid admin credentials" });
+      }
+    }
+
     const user = await User.findOne({ email: normalizedEmail });
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
@@ -113,6 +132,7 @@ const loginUser = async (req, res) => {
       name: user.name,
       email: user.email,
       role: effectiveRole,
+      username: user.username || getEmailPrefix(user.email),
       department: user.department,
       semester: user.semester,
       section: user.section,
@@ -146,6 +166,12 @@ const changePassword = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
+    if (user.role === "admin") {
+      return res.status(403).json({
+        message: "Default admin password cannot be changed from the dashboard",
+      });
+    }
+
     const isPasswordValid = await bcrypt.compare(
       currentPassword,
       user.password,
@@ -168,4 +194,53 @@ const changePassword = async (req, res) => {
   }
 };
 
-module.exports = { registerUser, loginUser, changePassword };
+const updateProfile = async (req, res) => {
+  try {
+    const { name, department, semester, section } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (name !== undefined) {
+      const normalizedName = String(name).trim();
+      if (!normalizedName) {
+        return res.status(400).json({ message: "Name cannot be empty" });
+      }
+      user.name = normalizedName;
+    }
+
+    if (department !== undefined) {
+      user.department = normalizeOptional(String(department));
+    }
+
+    if (user.role === "student") {
+      if (semester !== undefined) {
+        user.semester = normalizeOptional(String(semester));
+      }
+
+      if (section !== undefined) {
+        user.section = normalizeOptional(String(section)).toUpperCase();
+      }
+    }
+
+    await user.save();
+
+    res.json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      username: user.username || getEmailPrefix(user.email),
+      department: user.department,
+      semester: user.semester,
+      section: user.section,
+    });
+  } catch (err) {
+    console.error("UpdateProfile error:", err);
+    res.status(500).json({ message: err?.message || "Failed to update profile" });
+  }
+};
+
+module.exports = { registerUser, loginUser, changePassword, updateProfile };

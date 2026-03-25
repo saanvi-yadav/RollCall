@@ -9,8 +9,13 @@ import {
   clearCurrentUser,
   getCurrentUser,
   notificationAPI,
+  settingsAPI,
+  setCurrentUser,
   userAPI,
 } from "../utils/apiClient";
+
+const getAcademicId = (user = {}) =>
+  user.username || user.email?.split("@")[0] || "Not Available";
 
 const formatMonthKey = (dateValue) => {
   const date = new Date(dateValue);
@@ -31,11 +36,11 @@ const getPercentageColor = (percentage) => {
 function StudentDashboard() {
   const navigate = useNavigate();
   const { isDark, toggleTheme } = useTheme();
-  const currentUser = getCurrentUser();
+  const [currentUser, setCurrentUserState] = useState(() => getCurrentUser());
 
   const [studentData, setStudentData] = useState({
     name: currentUser?.name || "Student",
-    studentId: currentUser?.id ? `STU${currentUser.id.slice(-6)}` : "Not Available",
+    studentId: getAcademicId(currentUser || {}),
     course: "Not Assigned",
     department: currentUser?.department || "Not Assigned",
     semester: currentUser?.semester || "Not Assigned",
@@ -46,6 +51,7 @@ function StudentDashboard() {
   const [error, setError] = useState("");
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [showProfileSetupModal, setShowProfileSetupModal] = useState(false);
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
   const [changePasswordError, setChangePasswordError] = useState("");
   const [changePasswordSuccess, setChangePasswordSuccess] = useState("");
@@ -67,6 +73,27 @@ function StudentDashboard() {
   const [notifications, setNotifications] = useState([]);
   const [expandedSubject, setExpandedSubject] = useState(null);
   const [activeFilter, setActiveFilter] = useState("all");
+  const [profileSetupForm, setProfileSetupForm] = useState({
+    name: currentUser?.name || "",
+    studentId: getAcademicId(currentUser || {}),
+    department: currentUser?.department || "",
+    semester: currentUser?.semester || "",
+    section: currentUser?.section || "",
+  });
+  const [profileSetupLoading, setProfileSetupLoading] = useState(false);
+  const [profileSetupError, setProfileSetupError] = useState("");
+  const [academicConfig, setAcademicConfig] = useState({
+    departments: [],
+    semesters: [],
+    sections: [],
+  });
+
+  useEffect(() => {
+    document.body.style.overflow = showProfileSetupModal ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [showProfileSetupModal]);
 
   useEffect(() => {
     const loadDashboardData = async () => {
@@ -74,11 +101,12 @@ function StudentDashboard() {
       setError("");
 
       try {
-        const [statsResponse, attendanceResponse, classesResponse, notificationsResponse] = await Promise.all([
+        const [statsResponse, attendanceResponse, classesResponse, notificationsResponse, academicConfigResponse] = await Promise.all([
           attendanceAPI.getAttendanceStats(),
           attendanceAPI.getMyAttendance(),
           classAPI.getStudentClasses(),
           notificationAPI.getNotifications(),
+          settingsAPI.getAcademicConfig(),
         ]);
 
         setAttendanceStats({
@@ -103,12 +131,27 @@ function StudentDashboard() {
           }));
 
         setAttendanceHistory(normalizedHistory);
-        setEnrolledClasses(classesResponse);
+        setAcademicConfig({
+          departments: academicConfigResponse.departments || [],
+          semesters: academicConfigResponse.semesters || [],
+          sections: academicConfigResponse.sections || [],
+        });
+
+        const uniqueClasses = Array.from(
+          new Map(
+            classesResponse.map((classItem) => [
+              `${classItem.subject}-${classItem.course}-${classItem.section}-${classItem.semester}`,
+              classItem,
+            ]),
+          ).values(),
+        );
+
+        setEnrolledClasses(uniqueClasses);
         setNotifications(notificationsResponse);
 
         const groupedSubjects = new Map();
         normalizedHistory.forEach((record) => {
-          const key = record.classId || record.subject;
+          const key = `${record.subject}-${record.course}-${record.section}-${record.semester}`;
           if (!groupedSubjects.has(key)) {
             groupedSubjects.set(key, {
               id: key,
@@ -174,7 +217,7 @@ function StudentDashboard() {
         const primaryClass = classesResponse[0];
         setStudentData({
           name: currentUser?.name || "Student",
-          studentId: currentUser?.id ? `STU${currentUser.id.slice(-6)}` : "Not Available",
+          studentId: getAcademicId(currentUser || {}),
           course: primaryClass?.course || "Not Assigned",
           department: currentUser?.department || primaryClass?.subject || "Not Assigned",
           semester: currentUser?.semester || primaryClass?.semester || "Not Assigned",
@@ -190,13 +233,22 @@ function StudentDashboard() {
     };
 
     loadDashboardData();
-  }, [
-    currentUser?.department,
-    currentUser?.id,
-    currentUser?.name,
-    currentUser?.section,
-    currentUser?.semester,
-  ]);
+  }, [currentUser]);
+
+  useEffect(() => {
+    const shouldCompleteProfile =
+      currentUser?.role === "student" &&
+      (!currentUser?.department || !currentUser?.section);
+
+    setProfileSetupForm({
+      name: currentUser?.name || "",
+      studentId: getAcademicId(currentUser || {}),
+      department: currentUser?.department || "",
+      semester: currentUser?.semester || "",
+      section: currentUser?.section || "",
+    });
+    setShowProfileSetupModal(Boolean(shouldCompleteProfile));
+  }, [currentUser]);
 
   const filteredHistory =
     activeFilter === "all"
@@ -321,6 +373,61 @@ function StudentDashboard() {
     }
   };
 
+  const handleProfileSetupSubmit = async (event) => {
+    event.preventDefault();
+    setProfileSetupError("");
+
+    if (!profileSetupForm.name || !profileSetupForm.department || !profileSetupForm.section) {
+      setProfileSetupError("Name, department, and section are required");
+      return;
+    }
+
+    setProfileSetupLoading(true);
+    try {
+      const updatedUser = await userAPI.updateProfile({
+        name: profileSetupForm.name.trim(),
+        department: profileSetupForm.department.trim(),
+        semester: profileSetupForm.semester.trim(),
+        section: profileSetupForm.section.trim().toUpperCase(),
+      });
+
+      setCurrentUser({
+        id: updatedUser._id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        username: updatedUser.username,
+        department: updatedUser.department,
+        semester: updatedUser.semester,
+        section: updatedUser.section,
+      });
+      setCurrentUserState({
+        id: updatedUser._id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        username: updatedUser.username,
+        department: updatedUser.department,
+        semester: updatedUser.semester,
+        section: updatedUser.section,
+      });
+
+      setStudentData((prev) => ({
+        ...prev,
+        name: updatedUser.name,
+        studentId: updatedUser.username || getAcademicId(updatedUser),
+        department: updatedUser.department || "Not Assigned",
+        semester: updatedUser.semester || "Not Assigned",
+        section: updatedUser.section || "Not Assigned",
+      }));
+      setShowProfileSetupModal(false);
+    } catch (err) {
+      setProfileSetupError(err.message || "Failed to save profile");
+    } finally {
+      setProfileSetupLoading(false);
+    }
+  };
+
   return (
     <div className="student-dashboard">
       <div className="dashboard-topbar">
@@ -433,6 +540,108 @@ function StudentDashboard() {
               <button className="btn-submit" type="submit" disabled={changePasswordLoading}>
                 {changePasswordLoading ? "Changing..." : "Change Password"}
               </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showProfileSetupModal && (
+        <div className="profile-setup-overlay">
+          <div className="profile-setup-shell" onClick={(event) => event.stopPropagation()}>
+            <div className="profile-setup-hero">
+              <div>
+                <p className="profile-setup-kicker">Student Onboarding</p>
+                <h2>Complete Your Profile</h2>
+                <p className="profile-setup-copy">
+                  Add your academic details once so classes, attendance, and announcements map correctly to you.
+                </p>
+              </div>
+              <div className="profile-setup-id-card">
+                <span className="detail-label">Student ID</span>
+                <strong>{profileSetupForm.studentId}</strong>
+                <span>This is linked to your login email.</span>
+              </div>
+            </div>
+
+            <form onSubmit={handleProfileSetupSubmit} className="profile-setup-form">
+              {profileSetupError && <div className="form-error">{profileSetupError}</div>}
+
+              <div className="profile-setup-grid">
+                <div className="form-group">
+                  <label htmlFor="studentProfileName">Full Name</label>
+                  <input
+                    id="studentProfileName"
+                    value={profileSetupForm.name}
+                    onChange={(event) =>
+                      setProfileSetupForm((prev) => ({ ...prev, name: event.target.value }))
+                    }
+                    disabled={profileSetupLoading}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="studentProfileDepartment">Department</label>
+                  <select
+                    id="studentProfileDepartment"
+                    value={profileSetupForm.department}
+                    onChange={(event) =>
+                      setProfileSetupForm((prev) => ({ ...prev, department: event.target.value }))
+                    }
+                    disabled={profileSetupLoading}
+                  >
+                    <option value="">Select department</option>
+                    {academicConfig.departments.map((department) => (
+                      <option key={department} value={department}>{department}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="studentProfileSemester">Semester</label>
+                  <select
+                    id="studentProfileSemester"
+                    value={profileSetupForm.semester}
+                    onChange={(event) =>
+                      setProfileSetupForm((prev) => ({ ...prev, semester: event.target.value }))
+                    }
+                    disabled={profileSetupLoading}
+                  >
+                    <option value="">Select semester</option>
+                    {academicConfig.semesters.map((semester) => (
+                      <option key={semester} value={semester}>{semester}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="studentProfileSection">Section</label>
+                  <select
+                    id="studentProfileSection"
+                    value={profileSetupForm.section}
+                    onChange={(event) =>
+                      setProfileSetupForm((prev) => ({
+                        ...prev,
+                        section: event.target.value.toUpperCase(),
+                      }))
+                    }
+                    disabled={profileSetupLoading}
+                  >
+                    <option value="">Select section</option>
+                    {academicConfig.sections.map((section) => (
+                      <option key={section} value={section}>{section}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="profile-setup-actions">
+                <div className="profile-setup-hint">
+                  These details are used to assign your timetable, attendance records, and announcements.
+                </div>
+                <button className="btn-submit" type="submit" disabled={profileSetupLoading}>
+                  {profileSetupLoading ? "Saving..." : "Save Profile"}
+                </button>
+              </div>
             </form>
           </div>
         </div>

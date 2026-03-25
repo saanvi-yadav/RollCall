@@ -6,6 +6,8 @@ import SelectField from "../components/SelectField";
 import PrimaryButton from "../components/PrimaryButton";
 import { setAuthToken, setCurrentUser, userAPI } from "../utils/apiClient";
 
+const getAcademicId = (email = "") => email.trim().toLowerCase().split("@")[0] || "";
+
 const Signup = () => {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -48,6 +50,10 @@ const Signup = () => {
         name: loginResponse.name,
         email: loginResponse.email,
         role: loginResponse.role,
+        username: loginResponse.username || getAcademicId(loginResponse.email),
+        department: loginResponse.department || "",
+        semester: loginResponse.semester || "",
+        section: loginResponse.section || "",
       });
 
       if (loginResponse.role === "student") navigate("/student/dashboard");
@@ -114,7 +120,6 @@ const Signup = () => {
             { value: "", label: "Select Role" },
             { value: "student", label: "Student" },
             { value: "professor", label: "Professor" },
-            { value: "admin", label: "Admin" },
           ]}
           disabled={loading}
         />

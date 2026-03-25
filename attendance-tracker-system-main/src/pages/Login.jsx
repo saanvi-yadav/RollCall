@@ -6,6 +6,8 @@ import SelectField from "../components/SelectField";
 import PrimaryButton from "../components/PrimaryButton";
 import { setAuthToken, setCurrentUser, userAPI } from "../utils/apiClient";
 
+const getAcademicId = (email = "") => email.trim().toLowerCase().split("@")[0] || "";
+
 const Login = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -38,6 +40,10 @@ const Login = () => {
         name: response.name,
         email: response.email,
         role: response.role,
+        username: response.username || getAcademicId(response.email),
+        department: response.department || "",
+        semester: response.semester || "",
+        section: response.section || "",
       });
 
       // Navigate based on role
