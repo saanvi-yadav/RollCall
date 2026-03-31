@@ -59,6 +59,22 @@ const endOfDay = (value) => {
   return date;
 };
 
+const getObjectIdString = (value) => {
+  if (!value) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value._id) {
+    return String(value._id);
+  }
+
+  return String(value);
+};
+
 const buildSessionSummary = (records) => {
   if (!records.length) {
     return null;
@@ -67,10 +83,11 @@ const buildSessionSummary = (records) => {
   const presentCount = records.filter((record) => record.status === "present").length;
   const totalCount = records.length;
   const first = records[0];
+  const classId = getObjectIdString(first.class);
 
   return {
-    id: `${first.class || "general"}-${startOfDay(first.date).toISOString()}`,
-    classId: first.class || null,
+    id: `${classId || "general"}-${startOfDay(first.date).toISOString()}`,
+    classId: classId || null,
     subject: first.subject || "General Attendance",
     course: first.course || "",
     semester: first.semester || "",
@@ -82,7 +99,7 @@ const buildSessionSummary = (records) => {
     percentage: totalCount === 0 ? 0 : Number(((presentCount / totalCount) * 100).toFixed(2)),
     students: records.map((record) => ({
       attendanceId: record._id,
-      studentId: record.user?._id || record.user,
+      studentId: getObjectIdString(record.user),
       name: record.user?.name || "Unknown Student",
       email: record.user?.email || "",
       status: record.status,

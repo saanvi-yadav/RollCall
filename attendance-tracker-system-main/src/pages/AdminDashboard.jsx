@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../styles/admin-dashboard.css";
+import { useTheme } from "../context/ThemeContext";
 import {
   adminAPI,
   attendanceAPI,
@@ -46,6 +47,12 @@ const formatDateLabel = (dateValue) =>
 
 const normalizeValue = (value) => (value ? String(value).trim() : "");
 const normalizeSection = (value) => normalizeValue(value).toUpperCase();
+const toDateInputValue = (dateValue) => {
+  const date = new Date(dateValue);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+};
+const getStudentAcademicId = (student = {}) =>
+  student.academicId || student.username || student.email?.split("@")[0] || "";
 
 const getNotificationTargetSummary = (notification) => {
   const details = [];
@@ -68,6 +75,7 @@ const getNotificationTargetSummary = (notification) => {
 
 function AdminDashboard() {
   const navigate = useNavigate();
+  const { isDark, toggleTheme } = useTheme();
   const currentUser = getCurrentUser();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -111,6 +119,11 @@ function AdminDashboard() {
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState({});
   const [academicItemForm, setAcademicItemForm] = useState(emptyAcademicItemForm);
+  const [attendanceEditRecord, setAttendanceEditRecord] = useState(null);
+  const [attendanceEditStudents, setAttendanceEditStudents] = useState([]);
+  const [attendanceEditStatus, setAttendanceEditStatus] = useState({});
+  const [attendanceEditLoading, setAttendanceEditLoading] = useState(false);
+  const [attendanceEditSaving, setAttendanceEditSaving] = useState(false);
 
   const adminData = {
     name: currentUser?.name || "Admin User",
@@ -597,11 +610,104 @@ function AdminDashboard() {
     };
   }, [attendanceRecords]);
 
+  const closeAttendanceEditModal = () => {
+    setAttendanceEditRecord(null);
+    setAttendanceEditStudents([]);
+    setAttendanceEditStatus({});
+    setAttendanceEditLoading(false);
+    setAttendanceEditSaving(false);
+  };
+
+  const handleAttendanceEditChange = (studentId, status) => {
+    setAttendanceEditStatus((prev) => ({
+      ...prev,
+      [studentId]: status,
+    }));
+  };
+
+  const openAttendanceEditModal = async (record) => {
+    if (!record.classId) {
+      setError("This attendance session is not linked to a class, so it cannot be edited.");
+      return;
+    }
+
+    setAttendanceEditRecord({ ...record, sessionDate: toDateInputValue(record.date) });
+    setAttendanceEditStudents([]);
+    setAttendanceEditStatus({});
+    setAttendanceEditLoading(true);
+    setError("");
+
+    try {
+      const [sessionResponse, studentsResponse] = await Promise.all([
+        attendanceAPI.getClassAttendanceSession(record.classId, toDateInputValue(record.date)),
+        classAPI.getClassStudents(record.classId),
+      ]);
+
+      const nextStatus = {};
+      studentsResponse.forEach((student) => {
+        nextStatus[student._id] = "";
+      });
+      sessionResponse.students.forEach((student) => {
+        nextStatus[student.studentId] = student.status;
+      });
+
+      setAttendanceEditStudents(studentsResponse);
+      setAttendanceEditStatus(nextStatus);
+    } catch (err) {
+      setError(err.message || "Failed to load attendance session");
+      closeAttendanceEditModal();
+    } finally {
+      setAttendanceEditLoading(false);
+    }
+  };
+
+  const handleSaveAttendanceEdit = async () => {
+    if (!attendanceEditRecord?.classId || !attendanceEditRecord?.sessionDate) {
+      setError("No attendance session selected for editing");
+      return;
+    }
+
+    const filledStatuses = Object.fromEntries(
+      Object.entries(attendanceEditStatus).filter(([, status]) => status),
+    );
+
+    if (Object.keys(filledStatuses).length !== attendanceEditStudents.length) {
+      setError("Please mark attendance for every student before updating");
+      return;
+    }
+
+    setAttendanceEditSaving(true);
+
+    try {
+      await classAPI.updateClassAttendance(
+        attendanceEditRecord.classId,
+        filledStatuses,
+        attendanceEditRecord.sessionDate,
+      );
+      const statsResponse = await adminAPI.getDashboardStats();
+      setStatsData(statsResponse);
+      await loadAttendanceRecords(attendanceFilters);
+      setSuccessMessage("Attendance record updated successfully");
+      closeAttendanceEditModal();
+    } catch (err) {
+      setError(err.message || "Failed to update attendance record");
+    } finally {
+      setAttendanceEditSaving(false);
+    }
+  };
+
   return (
     <div className="admin-dashboard">
       <div className="dashboard-topbar">
         <div className="topbar-left"><h1>Admin Portal</h1></div>
         <div className="topbar-right">
+          <button
+            className="profile-menu-btn"
+            onClick={toggleTheme}
+            title={`Switch to ${isDark ? "light" : "dark"} mode`}
+          >
+            {isDark ? "Light Mode" : "Dark Mode"}
+          </button>
           <div className="profile-menu-wrapper">
             <button className="profile-menu-btn" onClick={() => setShowProfileMenu((prev) => !prev)} title="Profile settings">
               Settings
@@ -900,6 +1006,7 @@ function AdminDashboard() {
                         <th>Section</th>
                         <th>Present / Total</th>
                         <th>Percentage</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -912,11 +1019,16 @@ function AdminDashboard() {
                             <td>{record.section}</td>
                             <td>{record.presentCount}/{record.totalCount}</td>
                             <td>{record.percentage}%</td>
+                            <td>
+                              <button className="action-btn edit" onClick={() => openAttendanceEditModal(record)}>
+                                Edit
+                              </button>
+                            </td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan="6" className="no-data">No attendance records match these filters.</td>
+                          <td colSpan="7" className="no-data">No attendance records match these filters.</td>
                         </tr>
                       )}
                     </tbody>
@@ -1401,6 +1513,115 @@ function AdminDashboard() {
                 }}
               >
                 {editingId ? "Update" : "Create"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {attendanceEditRecord && (
+        <div className="modal-overlay" onClick={closeAttendanceEditModal}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Edit Attendance Session</h2>
+              <button className="modal-close" onClick={closeAttendanceEditModal}>X</button>
+            </div>
+
+            <div className="modal-body">
+              <div className="form-group-container" style={{ marginBottom: "1rem" }}>
+                <div className="form-group">
+                  <label>Date</label>
+                  <input value={new Date(attendanceEditRecord.date).toLocaleDateString()} readOnly />
+                </div>
+                <div className="form-group">
+                  <label>Subject</label>
+                  <input value={attendanceEditRecord.subject || ""} readOnly />
+                </div>
+                <div className="form-group">
+                  <label>Course</label>
+                  <input value={attendanceEditRecord.course || ""} readOnly />
+                </div>
+                <div className="form-group">
+                  <label>Section</label>
+                  <input value={attendanceEditRecord.section || ""} readOnly />
+                </div>
+              </div>
+
+              {attendanceEditLoading ? (
+                <div className="loading-container">
+                  <div className="spinner"></div>
+                  <p>Loading attendance session...</p>
+                </div>
+              ) : (
+                <div className="table-wrapper" style={{ maxHeight: "420px" }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Student ID</th>
+                        <th>Student Name</th>
+                        <th>Email</th>
+                        <th>Attendance</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {attendanceEditStudents.map((student) => (
+                        <tr key={student._id}>
+                          <td>{getStudentAcademicId(student)}</td>
+                          <td>{student.name}</td>
+                          <td>{student.email}</td>
+                          <td>
+                            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                              <button
+                                type="button"
+                                className="action-btn edit"
+                                style={{
+                                  background:
+                                    attendanceEditStatus[student._id] === "present"
+                                      ? "#dcfce7"
+                                      : "rgba(16, 185, 129, 0.12)",
+                                  color: "#047857",
+                                }}
+                                onClick={() => handleAttendanceEditChange(student._id, "present")}
+                              >
+                                Present
+                              </button>
+                              <button
+                                type="button"
+                                className="action-btn delete"
+                                style={{
+                                  background:
+                                    attendanceEditStatus[student._id] === "absent"
+                                      ? "#fee2e2"
+                                      : "rgba(239, 68, 68, 0.12)",
+                                  color: "#b91c1c",
+                                }}
+                                onClick={() => handleAttendanceEditChange(student._id, "absent")}
+                              >
+                                Absent
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {attendanceEditStudents.length === 0 && (
+                        <tr>
+                          <td colSpan="4" className="no-data">No students found for this attendance session.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn-cancel" onClick={closeAttendanceEditModal}>Cancel</button>
+              <button
+                className="btn-save"
+                onClick={handleSaveAttendanceEdit}
+                disabled={attendanceEditLoading || attendanceEditSaving}
+              >
+                {attendanceEditSaving ? "Updating..." : "Update Attendance"}
               </button>
             </div>
           </div>
