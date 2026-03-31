@@ -2,6 +2,7 @@ const Class = require("../models/Class");
 const Attendance = require("../models/Attendance");
 const Course = require("../models/Course");
 const User = require("../models/User");
+const AcademicConfig = require("../models/AcademicConfig");
 
 const startOfDay = (value) => {
   const date = new Date(value);
@@ -17,10 +18,106 @@ const endOfDay = (value) => {
 
 const normalizeValue = (value) => (value ? String(value).trim() : "");
 const normalizeSection = (value) => normalizeValue(value).toUpperCase();
+const weekdayValues = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const weekdayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const getEmailPrefix = (email = "") =>
   String(email).trim().toLowerCase().split("@")[0] || "";
 const compareAcademicIds = (left = "", right = "") =>
   left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+
+const normalizeWeekdays = (weekdays = []) =>
+  [...new Set(
+    (Array.isArray(weekdays) ? weekdays : [])
+      .map((day) => normalizeValue(day))
+      .filter((day) => weekdayOrder.includes(day)),
+  )].sort((left, right) => weekdayOrder.indexOf(left) - weekdayOrder.indexOf(right));
+
+const resolveWeekdays = (weekdays = [], fallbackDate = null) => {
+  const normalizedWeekdays = normalizeWeekdays(weekdays);
+  if (normalizedWeekdays.length > 0) {
+    return normalizedWeekdays;
+  }
+
+  if (!fallbackDate) {
+    return [];
+  }
+
+  const fallback = new Date(fallbackDate);
+  if (Number.isNaN(fallback.getTime())) {
+    return [];
+  }
+
+  return [weekdayValues[fallback.getDay()]];
+};
+
+const getFirstRecurringDate = (termStartDate, weekdays = []) => {
+  const startDate = startOfDay(termStartDate);
+  const normalizedWeekdays = resolveWeekdays(weekdays, startDate);
+
+  if (!normalizedWeekdays.length) {
+    return startDate;
+  }
+
+  for (let offset = 0; offset < 7; offset += 1) {
+    const candidate = new Date(startDate);
+    candidate.setDate(startDate.getDate() + offset);
+    const weekdayLabel = weekdayValues[candidate.getDay()];
+    if (normalizedWeekdays.includes(weekdayLabel)) {
+      return startOfDay(candidate);
+    }
+  }
+
+  return startDate;
+};
+
+const getScheduleSortDate = (classItem) =>
+  classItem.termStartDate || classItem.scheduleDate || classItem.createdAt || new Date(0);
+
+const getBlockedAcademicEvent = async (dateValue) => {
+  const config = await AcademicConfig.findOne({ key: "default" }).select("academicEvents");
+  if (!config?.academicEvents?.length) {
+    return null;
+  }
+
+  const sessionDate = startOfDay(dateValue);
+  return (
+    config.academicEvents.find((event) => {
+      const startDate = startOfDay(event.startDate);
+      const endDate = startOfDay(event.endDate);
+      return sessionDate >= startDate && sessionDate <= endDate;
+    }) || null
+  );
+};
+
+const buildScheduleFields = ({
+  termStartDate,
+  termEndDate,
+  weekdays,
+  scheduleDate,
+}) => {
+  const normalizedStartDate = termStartDate || scheduleDate;
+  const normalizedEndDate = termEndDate || normalizedStartDate;
+  const normalizedWeekdays = resolveWeekdays(weekdays, normalizedStartDate);
+
+  if (!normalizedStartDate || !normalizedEndDate || !normalizedWeekdays.length) {
+    throw new Error("Recurring timetable needs term dates and at least one weekday");
+  }
+
+  const startDate = startOfDay(normalizedStartDate);
+  const endDate = startOfDay(normalizedEndDate);
+
+  if (endDate < startDate) {
+    throw new Error("Term end date cannot be earlier than term start date");
+  }
+
+  return {
+    termStartDate: startDate,
+    termEndDate: endDate,
+    weekdays: normalizedWeekdays,
+    scheduleDate: getFirstRecurringDate(startDate, normalizedWeekdays),
+    scheduleType: "weekly",
+  };
+};
 
 const validateClassStudents = async (studentIds = [], semester, section) => {
   if (!Array.isArray(studentIds) || studentIds.length === 0) {
@@ -61,7 +158,7 @@ const getAllClasses = async (req, res) => {
       .populate("courseRef", "name code semester department")
       .populate("professor", "name email")
       .populate("students", "name email semester section department");
-    classes.sort((a, b) => new Date(a.scheduleDate) - new Date(b.scheduleDate));
+    classes.sort((a, b) => new Date(getScheduleSortDate(a)) - new Date(getScheduleSortDate(b)));
     res.json(classes);
   } catch (err) {
     console.error("GetAllClasses error:", err);
@@ -75,7 +172,7 @@ const getProfessorClasses = async (req, res) => {
     const classes = await Class.find({ professor: req.user._id })
       .populate("courseRef", "name code semester department")
       .populate("students", "name email semester section department")
-      .sort({ scheduleDate: 1, startTime: 1 });
+      .sort({ termStartDate: 1, scheduleDate: 1, startTime: 1 });
     res.json(classes);
   } catch (err) {
     console.error("GetProfessorClasses error:", err);
@@ -90,7 +187,7 @@ const getStudentClasses = async (req, res) => {
       .populate("courseRef", "name code semester department")
       .populate("professor", "name email")
       .populate("students", "name email semester section department")
-      .sort({ scheduleDate: 1, startTime: 1 });
+      .sort({ termStartDate: 1, scheduleDate: 1, startTime: 1 });
     res.json(classes);
   } catch (err) {
     console.error("GetStudentClasses error:", err);
@@ -110,13 +207,16 @@ const createClass = async (req, res) => {
       professor,
       students = [],
       scheduleDate,
+      termStartDate,
+      termEndDate,
+      weekdays = [],
       startTime,
       endTime,
       room,
     } = req.body;
 
-    if (!subject || !course || !semester || !section || !scheduleDate || !startTime || !endTime) {
-      return res.status(400).json({ message: "All class schedule fields are required" });
+    if (!subject || !course || !semester || !section || !startTime || !endTime) {
+      return res.status(400).json({ message: "All timetable fields are required" });
     }
 
     let resolvedProfessor = professor || req.user._id;
@@ -140,6 +240,13 @@ const createClass = async (req, res) => {
 
     await validateClassStudents(students, semester, section);
 
+    const scheduleFields = buildScheduleFields({
+      termStartDate,
+      termEndDate,
+      weekdays,
+      scheduleDate,
+    });
+
     const newClass = await Class.create({
       subject,
       courseRef: resolvedCourseRef,
@@ -148,7 +255,7 @@ const createClass = async (req, res) => {
       section: normalizeSection(section),
       professor: resolvedProfessor,
       students,
-      scheduleDate,
+      ...scheduleFields,
       startTime,
       endTime,
       room,
@@ -179,6 +286,9 @@ const updateClass = async (req, res) => {
       professor,
       students,
       scheduleDate,
+      termStartDate,
+      termEndDate,
+      weekdays,
       startTime,
       endTime,
       room,
@@ -220,7 +330,18 @@ const updateClass = async (req, res) => {
     if (semester !== undefined) classData.semester = nextSemester;
     if (section !== undefined) classData.section = nextSection;
     if (professor) classData.professor = professor;
-    if (scheduleDate) classData.scheduleDate = scheduleDate;
+    const nextScheduleFields = buildScheduleFields({
+      termStartDate: termStartDate !== undefined ? termStartDate : classData.termStartDate,
+      termEndDate: termEndDate !== undefined ? termEndDate : classData.termEndDate,
+      weekdays: weekdays !== undefined ? weekdays : classData.weekdays,
+      scheduleDate: scheduleDate !== undefined ? scheduleDate : classData.scheduleDate,
+    });
+
+    classData.scheduleDate = nextScheduleFields.scheduleDate;
+    classData.termStartDate = nextScheduleFields.termStartDate;
+    classData.termEndDate = nextScheduleFields.termEndDate;
+    classData.weekdays = nextScheduleFields.weekdays;
+    classData.scheduleType = nextScheduleFields.scheduleType;
     if (startTime) classData.startTime = startTime;
     if (endTime) classData.endTime = endTime;
     if (room !== undefined) classData.room = room;
@@ -324,6 +445,12 @@ const markClassAttendance = async (req, res) => {
     }
 
     const sessionDate = date ? startOfDay(date) : startOfDay(new Date());
+    const blockedEvent = await getBlockedAcademicEvent(sessionDate);
+    if (blockedEvent) {
+      return res.status(400).json({
+        message: `Attendance cannot be marked on ${blockedEvent.type.replace("_", " ")}: ${blockedEvent.title}`,
+      });
+    }
     const results = [];
 
     for (const [studentId, status] of Object.entries(attendanceData)) {
@@ -369,6 +496,12 @@ const updateClassAttendance = async (req, res) => {
 
     const sessionStart = startOfDay(date);
     const sessionEnd = endOfDay(date);
+    const blockedEvent = await getBlockedAcademicEvent(sessionStart);
+    if (blockedEvent) {
+      return res.status(400).json({
+        message: `Attendance cannot be updated on ${blockedEvent.type.replace("_", " ")}: ${blockedEvent.title}`,
+      });
+    }
 
     await Attendance.deleteMany({
       class: classId,

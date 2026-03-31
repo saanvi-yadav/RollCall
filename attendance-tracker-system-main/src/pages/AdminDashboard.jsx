@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../styles/admin-dashboard.css";
 import { useTheme } from "../context/ThemeContext";
@@ -12,6 +12,7 @@ import {
   getCurrentUser,
   notificationAPI,
   settingsAPI,
+  userAPI,
 } from "../utils/apiClient";
 
 const emptyUserForm = {
@@ -27,6 +28,13 @@ const emptyAcademicItemForm = {
   semester: "",
   section: "",
 };
+const emptyAcademicEventForm = {
+  title: "",
+  type: "holiday",
+  startDate: "",
+  endDate: "",
+  notes: "",
+};
 const emptyCourseForm = { name: "", code: "", semester: "", department: "", description: "", professor: "" };
 const emptyClassForm = {
   subject: "",
@@ -36,7 +44,9 @@ const emptyClassForm = {
   courseRef: "",
   professor: "",
   students: [],
-  scheduleDate: "",
+  termStartDate: "",
+  termEndDate: "",
+  weekdays: [],
   startTime: "",
   endTime: "",
   room: "",
@@ -47,12 +57,65 @@ const formatDateLabel = (dateValue) =>
 
 const normalizeValue = (value) => (value ? String(value).trim() : "");
 const normalizeSection = (value) => normalizeValue(value).toUpperCase();
-const toDateInputValue = (dateValue) => {
+const weekdayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const weekdayByIndex = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const toSessionDateValue = (dateValue) => {
+  if (!dateValue) {
+    return "";
+  }
+
   const date = new Date(dateValue);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toISOString().slice(0, 10);
 };
 const getStudentAcademicId = (student = {}) =>
   student.academicId || student.username || student.email?.split("@")[0] || "";
+const getWeekdayFromDate = (dateValue) => {
+  if (!dateValue) {
+    return "";
+  }
+
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return weekdayByIndex[date.getDay()];
+};
+const getClassWeekdays = (classItem = {}) => {
+  const resolved = Array.isArray(classItem.weekdays) && classItem.weekdays.length > 0
+    ? classItem.weekdays
+    : [getWeekdayFromDate(classItem.scheduleDate)].filter(Boolean);
+
+  return [...new Set(resolved)].sort(
+    (left, right) => weekdayOrder.indexOf(left) - weekdayOrder.indexOf(right),
+  );
+};
+const formatClassSchedule = (classItem = {}) => {
+  const weekdays = getClassWeekdays(classItem);
+  const startLabel = classItem.termStartDate || classItem.scheduleDate;
+  const endLabel = classItem.termEndDate || classItem.scheduleDate;
+  const rangeLabel =
+    startLabel && endLabel
+      ? `${formatDateLabel(startLabel)} - ${formatDateLabel(endLabel)}`
+      : formatDateLabel(startLabel);
+
+  return {
+    weekdayLabel: weekdays.length > 0 ? weekdays.join(", ") : "No weekdays",
+    rangeLabel,
+  };
+};
+
+const getInitials = (name = "") =>
+  name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "AU";
 
 const getNotificationTargetSummary = (notification) => {
   const details = [];
@@ -89,6 +152,7 @@ function AdminDashboard() {
     departments: [],
     semesters: [],
     sections: [],
+    academicEvents: [],
   });
   const [statsData, setStatsData] = useState({
     totalStudents: 0,
@@ -124,6 +188,17 @@ function AdminDashboard() {
   const [attendanceEditStatus, setAttendanceEditStatus] = useState({});
   const [attendanceEditLoading, setAttendanceEditLoading] = useState(false);
   const [attendanceEditSaving, setAttendanceEditSaving] = useState(false);
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [changePasswordLoading, setChangePasswordLoading] = useState(false);
+  const [changePasswordError, setChangePasswordError] = useState("");
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState("");
+  const [changePasswordForm, setChangePasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmNewPassword: "",
+  });
+  const profileMenuRef = useRef(null);
+  const [academicEventForm, setAcademicEventForm] = useState(emptyAcademicEventForm);
 
   const adminData = {
     name: currentUser?.name || "Admin User",
@@ -207,6 +282,7 @@ function AdminDashboard() {
         departments: academicConfigResponse.departments || [],
         semesters: academicConfigResponse.semesters || [],
         sections: academicConfigResponse.sections || [],
+        academicEvents: academicConfigResponse.academicEvents || [],
       });
       const attendanceResponse = await attendanceAPI.getAllAttendanceRecords();
       const notificationsResponse = await notificationAPI.getNotifications();
@@ -265,10 +341,77 @@ function AdminDashboard() {
     }));
   }, [formData.section, formData.semester, modalType, students]);
 
+  useEffect(() => {
+    if (!showProfileMenu) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
+        setShowProfileMenu(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [showProfileMenu]);
+
   const handleLogout = () => {
     clearAuthToken();
     clearCurrentUser();
     navigate("/login");
+  };
+
+  const handleChangePasswordOpen = () => {
+    setShowChangePasswordModal(true);
+    setShowProfileMenu(false);
+    setChangePasswordError("");
+    setChangePasswordSuccess("");
+  };
+
+  const handleChangePasswordSubmit = async (event) => {
+    event.preventDefault();
+    setChangePasswordError("");
+    setChangePasswordSuccess("");
+
+    if (
+      !changePasswordForm.currentPassword ||
+      !changePasswordForm.newPassword ||
+      !changePasswordForm.confirmNewPassword
+    ) {
+      setChangePasswordError("All fields are required");
+      return;
+    }
+
+    if (changePasswordForm.newPassword !== changePasswordForm.confirmNewPassword) {
+      setChangePasswordError("New passwords do not match");
+      return;
+    }
+
+    if (changePasswordForm.newPassword.length < 6) {
+      setChangePasswordError("New password must be at least 6 characters");
+      return;
+    }
+
+    setChangePasswordLoading(true);
+
+    try {
+      await userAPI.changePassword(
+        changePasswordForm.currentPassword,
+        changePasswordForm.newPassword,
+      );
+      setChangePasswordSuccess("Password changed successfully!");
+      setChangePasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmNewPassword: "",
+      });
+      setTimeout(() => setShowChangePasswordModal(false), 1500);
+    } catch (err) {
+      setChangePasswordError(err.message || "Failed to change password");
+    } finally {
+      setChangePasswordLoading(false);
+    }
   };
 
   const closeModal = () => {
@@ -303,7 +446,9 @@ function AdminDashboard() {
         courseRef: item.courseRef?._id || "",
         professor: item.professor?._id || item.professor || "",
         students: item.students?.map((student) => student._id) || [],
-        scheduleDate: item.scheduleDate?.slice(0, 10) || "",
+        termStartDate: item.termStartDate?.slice(0, 10) || item.scheduleDate?.slice(0, 10) || "",
+        termEndDate: item.termEndDate?.slice(0, 10) || item.scheduleDate?.slice(0, 10) || "",
+        weekdays: getClassWeekdays(item),
         startTime: item.startTime || "",
         endTime: item.endTime || "",
         room: item.room || "",
@@ -410,19 +555,41 @@ function AdminDashboard() {
     }));
   };
 
-  const handleUpdateAcademicConfig = async (nextConfig) => {
+  const handleUpdateAcademicConfig = async (nextConfig, fieldToClear = null) => {
     try {
       const response = await settingsAPI.updateAcademicConfig(nextConfig);
       setAcademicConfig({
         departments: response.departments || [],
         semesters: response.semesters || [],
         sections: response.sections || [],
+        academicEvents: response.academicEvents || [],
       });
-      setAcademicItemForm(emptyAcademicItemForm);
+      if (fieldToClear) {
+        setAcademicItemForm((prev) => ({
+          ...prev,
+          [fieldToClear]: "",
+        }));
+      }
       setSuccessMessage("Academic configuration updated successfully");
     } catch (err) {
       setError(err.message || "Failed to update academic configuration");
     }
+  };
+
+  const handleWeekdayToggle = (weekday) => {
+    setFormData((prev) => {
+      const currentWeekdays = prev.weekdays || [];
+      const nextWeekdays = currentWeekdays.includes(weekday)
+        ? currentWeekdays.filter((day) => day !== weekday)
+        : [...currentWeekdays, weekday];
+
+      return {
+        ...prev,
+        weekdays: nextWeekdays.sort(
+          (left, right) => weekdayOrder.indexOf(left) - weekdayOrder.indexOf(right),
+        ),
+      };
+    });
   };
 
   const handleAddAcademicItem = async (type) => {
@@ -449,6 +616,45 @@ function AdminDashboard() {
         type === "section"
           ? [...sectionOptions, value]
           : sectionOptions,
+      academicEvents: academicConfig.academicEvents || [],
+    }, type);
+  };
+
+  const handleAcademicEventInputChange = (event) => {
+    const { name, value } = event.target;
+    setAcademicEventForm((prev) => ({
+      ...prev,
+      [name]: value,
+      ...(name === "startDate" && !prev.endDate ? { endDate: value } : {}),
+    }));
+  };
+
+  const handleSaveAcademicEvent = async () => {
+    if (!academicEventForm.title || !academicEventForm.startDate || !academicEventForm.endDate) {
+      setError("Please complete the academic calendar event details");
+      return;
+    }
+
+    await handleUpdateAcademicConfig({
+      departments: departmentOptions,
+      semesters: semesterOptions,
+      sections: sectionOptions,
+      academicEvents: [
+        ...(academicConfig.academicEvents || []),
+        {
+          ...academicEventForm,
+        },
+      ],
+    });
+    setAcademicEventForm(emptyAcademicEventForm);
+  };
+
+  const handleRemoveAcademicEvent = async (indexToRemove) => {
+    await handleUpdateAcademicConfig({
+      departments: departmentOptions,
+      semesters: semesterOptions,
+      sections: sectionOptions,
+      academicEvents: (academicConfig.academicEvents || []).filter((_, index) => index !== indexToRemove),
     });
   };
 
@@ -466,6 +672,7 @@ function AdminDashboard() {
         type === "section"
           ? sectionOptions.filter((item) => item !== value)
           : sectionOptions,
+      academicEvents: academicConfig.academicEvents || [],
     });
   };
 
@@ -504,17 +711,22 @@ function AdminDashboard() {
 
   const handleSaveClass = async () => {
     try {
+      if (!Array.isArray(formData.weekdays) || formData.weekdays.length === 0) {
+        setError("Please choose at least one weekday for the recurring timetable");
+        return;
+      }
+
       if (editingId) {
         await classAPI.updateClass(editingId, formData);
-        setSuccessMessage("Class schedule updated successfully");
+        setSuccessMessage("Recurring timetable slot updated successfully");
       } else {
         await classAPI.createClass(formData);
-        setSuccessMessage("Class schedule created successfully");
+        setSuccessMessage("Recurring timetable slot created successfully");
       }
       closeModal();
       await loadDashboardData();
     } catch (err) {
-      setError(err.message || "Failed to save class schedule");
+      setError(err.message || "Failed to save recurring timetable");
     }
   };
 
@@ -541,13 +753,13 @@ function AdminDashboard() {
   };
 
   const handleDeleteClass = async (id) => {
-    if (!confirm("Are you sure you want to delete this class schedule?")) return;
+    if (!confirm("Are you sure you want to delete this recurring timetable slot?")) return;
     try {
       await classAPI.deleteClass(id);
-      setSuccessMessage("Class schedule deleted successfully");
+      setSuccessMessage("Recurring timetable slot deleted successfully");
       await loadDashboardData();
     } catch (err) {
-      setError(err.message || "Failed to delete class schedule");
+      setError(err.message || "Failed to delete recurring timetable");
     }
   };
 
@@ -610,6 +822,14 @@ function AdminDashboard() {
     };
   }, [attendanceRecords]);
 
+  const recentNotifications = useMemo(
+    () =>
+      [...notifications]
+        .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
+        .slice(0, 5),
+    [notifications],
+  );
+
   const closeAttendanceEditModal = () => {
     setAttendanceEditRecord(null);
     setAttendanceEditStudents([]);
@@ -631,31 +851,63 @@ function AdminDashboard() {
       return;
     }
 
-    setAttendanceEditRecord({ ...record, sessionDate: toDateInputValue(record.date) });
+    const sessionDate = toSessionDateValue(record.date);
+    const fallbackStatuses = {};
+    (record.students || []).forEach((student) => {
+      if (student?.studentId) {
+        fallbackStatuses[student.studentId] = student.status || "";
+      }
+    });
+
+    setAttendanceEditRecord({ ...record, sessionDate });
     setAttendanceEditStudents([]);
-    setAttendanceEditStatus({});
+    setAttendanceEditStatus(fallbackStatuses);
     setAttendanceEditLoading(true);
     setError("");
 
     try {
-      const [sessionResponse, studentsResponse] = await Promise.all([
-        attendanceAPI.getClassAttendanceSession(record.classId, toDateInputValue(record.date)),
+      const [sessionResponse, studentsResponse] = await Promise.allSettled([
+        attendanceAPI.getClassAttendanceSession(record.classId, sessionDate),
         classAPI.getClassStudents(record.classId),
       ]);
 
+      const loadedStudents =
+        studentsResponse.status === "fulfilled" && Array.isArray(studentsResponse.value)
+          ? studentsResponse.value
+          : [];
+      const sessionStudents =
+        sessionResponse.status === "fulfilled" && Array.isArray(sessionResponse.value?.students)
+          ? sessionResponse.value.students
+          : record.students || [];
+
+      const mergedStudents =
+        loadedStudents.length > 0
+          ? loadedStudents
+          : sessionStudents.map((student) => ({
+              _id: student.studentId,
+              name: student.name || "Unknown Student",
+              email: student.email || "",
+              academicId: "",
+            }));
+
       const nextStatus = {};
-      studentsResponse.forEach((student) => {
-        nextStatus[student._id] = "";
+      mergedStudents.forEach((student) => {
+        nextStatus[student._id] = fallbackStatuses[student._id] || "";
       });
-      sessionResponse.students.forEach((student) => {
-        nextStatus[student.studentId] = student.status;
+      sessionStudents.forEach((student) => {
+        if (student?.studentId) {
+          nextStatus[student.studentId] = student.status || nextStatus[student.studentId] || "";
+        }
       });
 
-      setAttendanceEditStudents(studentsResponse);
+      setAttendanceEditStudents(mergedStudents);
       setAttendanceEditStatus(nextStatus);
+
+      if (sessionResponse.status === "rejected" && studentsResponse.status === "rejected") {
+        setError("Attendance session opened with limited data. Please review before saving.");
+      }
     } catch (err) {
       setError(err.message || "Failed to load attendance session");
-      closeAttendanceEditModal();
     } finally {
       setAttendanceEditLoading(false);
     }
@@ -701,31 +953,140 @@ function AdminDashboard() {
       <div className="dashboard-topbar">
         <div className="topbar-left"><h1>Admin Portal</h1></div>
         <div className="topbar-right">
-          <button
-            className="profile-menu-btn"
-            onClick={toggleTheme}
-            title={`Switch to ${isDark ? "light" : "dark"} mode`}
-          >
-            {isDark ? "Light Mode" : "Dark Mode"}
-          </button>
-          <div className="profile-menu-wrapper">
-            <button className="profile-menu-btn" onClick={() => setShowProfileMenu((prev) => !prev)} title="Profile settings">
-              Settings
+          <div className="profile-menu-wrapper" ref={profileMenuRef}>
+            <button
+              className={`account-trigger ${showProfileMenu ? "open" : ""}`}
+              onClick={() => setShowProfileMenu((prev) => !prev)}
+              title="Open account menu"
+              type="button"
+            >
+              <div className="account-trigger-avatar">
+                <img src={adminData.profilePhoto} alt={adminData.name} className="account-trigger-image" />
+              </div>
+              <div className="account-trigger-copy">
+                <span className="account-trigger-name">{adminData.name}</span>
+                <span className="account-trigger-role">System Admin</span>
+              </div>
+              <span className="account-trigger-caret">{showProfileMenu ? "˄" : "˅"}</span>
             </button>
             {showProfileMenu && (
               <div className="profile-menu-dropdown">
-                <button className="menu-item" onClick={handleLogout}>Logout</button>
+                <div className="profile-menu-summary">
+                  <div className="profile-menu-avatar">{getInitials(adminData.name)}</div>
+                  <div className="profile-menu-summary-copy">
+                    <strong>{adminData.name}</strong>
+                    <span>{adminData.email}</span>
+                  </div>
+                </div>
+                <button className="menu-item" onClick={toggleTheme} type="button">
+                  <span>Appearance</span>
+                  <span>{isDark ? "Light" : "Dark"}</span>
+                </button>
+                <button className="menu-item" onClick={handleChangePasswordOpen} type="button">
+                  <span>Change Password</span>
+                </button>
+                <button className="menu-item danger" onClick={handleLogout} type="button">
+                  <span>Logout</span>
+                </button>
               </div>
             )}
           </div>
         </div>
       </div>
 
+      {showChangePasswordModal && (
+        <div className="modal-overlay" onClick={() => setShowChangePasswordModal(false)}>
+          <div className="modal account-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Change Password</h2>
+              <button className="modal-close" onClick={() => setShowChangePasswordModal(false)}>X</button>
+            </div>
+            <div className="modal-body">
+              <form onSubmit={handleChangePasswordSubmit} className="change-password-form">
+                {changePasswordError && <div className="form-error">{changePasswordError}</div>}
+                {changePasswordSuccess && <div className="form-success">{changePasswordSuccess}</div>}
+
+                <div className="form-group">
+                  <label htmlFor="adminCurrentPassword">Current Password</label>
+                  <input
+                    id="adminCurrentPassword"
+                    type="password"
+                    value={changePasswordForm.currentPassword}
+                    onChange={(event) =>
+                      setChangePasswordForm((prev) => ({
+                        ...prev,
+                        currentPassword: event.target.value,
+                      }))
+                    }
+                    disabled={changePasswordLoading}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="adminNewPassword">New Password</label>
+                  <input
+                    id="adminNewPassword"
+                    type="password"
+                    value={changePasswordForm.newPassword}
+                    onChange={(event) =>
+                      setChangePasswordForm((prev) => ({
+                        ...prev,
+                        newPassword: event.target.value,
+                      }))
+                    }
+                    disabled={changePasswordLoading}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="adminConfirmPassword">Confirm New Password</label>
+                  <input
+                    id="adminConfirmPassword"
+                    type="password"
+                    value={changePasswordForm.confirmNewPassword}
+                    onChange={(event) =>
+                      setChangePasswordForm((prev) => ({
+                        ...prev,
+                        confirmNewPassword: event.target.value,
+                      }))
+                    }
+                    disabled={changePasswordLoading}
+                  />
+                </div>
+
+                <button className="btn-submit" type="submit" disabled={changePasswordLoading}>
+                  {changePasswordLoading ? "Changing..." : "Change Password"}
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
       {error && <div className="error-banner">{error}<button onClick={() => setError("")}>X</button></div>}
       {successMessage && (
         <div className="error-banner" style={{ background: "#dcfce7", color: "#166534" }}>
           {successMessage}
           <button onClick={() => setSuccessMessage("")}>X</button>
+        </div>
+      )}
+
+      {!loading && recentNotifications.length > 0 && (
+        <div className="announcement-marquee" aria-label="Recent announcements">
+          <div className="announcement-marquee-track">
+            {[...recentNotifications, ...recentNotifications].map((notification, index) => (
+              <div
+                key={`${notification._id}-${index}`}
+                className="announcement-pill"
+              >
+                <span className="announcement-pill-title">{notification.title}</span>
+                <span className="announcement-pill-message">{notification.message}</span>
+                <span className="announcement-pill-meta">
+                  {notification.author?.name || "Admin"} | {new Date(notification.createdAt).toLocaleDateString()}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -888,27 +1249,38 @@ function AdminDashboard() {
             <div className="tab-content">
               <div className="glass-panel">
                 <div className="section-header">
-                  <h3>Manage Class Schedules</h3>
-                  <button className="add-btn" onClick={() => openModal("class")}>Add Class</button>
+                  <h3>Manage Recurring Timetable</h3>
+                  <button className="add-btn" onClick={() => openModal("class")}>Add Timetable Slot</button>
                 </div>
                 <div className="table-wrapper">
                   <table className="data-table">
                     <thead><tr><th>Subject</th><th>Course</th><th>Section</th><th>Professor</th><th>Schedule</th><th>Students</th><th>Actions</th></tr></thead>
                     <tbody>
-                      {classes.map((classItem) => (
+                      {classes.map((classItem) => {
+                        const scheduleSummary = formatClassSchedule(classItem);
+                        return (
                         <tr key={classItem._id}>
                           <td>{classItem.subject}</td>
                           <td>{classItem.course}</td>
                           <td>{classItem.section}</td>
                           <td>{classItem.professor?.name || "Unassigned"}</td>
-                          <td>{formatDateLabel(classItem.scheduleDate)}<br /><span className="detail-label">{classItem.startTime} - {classItem.endTime}{classItem.room ? ` / ${classItem.room}` : ""}</span></td>
+                          <td>
+                            {scheduleSummary.weekdayLabel}
+                            <br />
+                            <span className="detail-label">
+                              {scheduleSummary.rangeLabel}
+                              <br />
+                              {classItem.startTime} - {classItem.endTime}{classItem.room ? ` / ${classItem.room}` : ""}
+                            </span>
+                          </td>
                           <td>{classItem.students?.length || 0}</td>
                           <td>
                             <button className="action-btn edit" onClick={() => openModal("class", classItem)}>Edit</button>
                             <button className="action-btn delete" onClick={() => handleDeleteClass(classItem._id)}>Delete</button>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1020,7 +1392,7 @@ function AdminDashboard() {
                             <td>{record.presentCount}/{record.totalCount}</td>
                             <td>{record.percentage}%</td>
                             <td>
-                              <button className="action-btn edit" onClick={() => openAttendanceEditModal(record)}>
+                              <button className="action-btn edit" type="button" onClick={() => openAttendanceEditModal(record)}>
                                 Edit
                               </button>
                             </td>
@@ -1121,6 +1493,91 @@ function AdminDashboard() {
                         </button>
                       )) : <div className="no-data">No sections configured yet.</div>}
                     </div>
+                  </div>
+                </div>
+
+                <div className="glass-panel" style={{ marginTop: "1.5rem", marginBottom: 0 }}>
+                  <div className="section-header">
+                    <h3>Holiday And Exam Calendar</h3>
+                    <p className="section-subtitle">Mark holidays, exam windows, and no-class days so attendance stays accurate</p>
+                  </div>
+
+                  <div className="form-group-container" style={{ marginBottom: "1rem" }}>
+                    <div className="form-group">
+                      <label>Title</label>
+                      <input
+                        name="title"
+                        value={academicEventForm.title}
+                        onChange={handleAcademicEventInputChange}
+                        placeholder="Diwali Break"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Type</label>
+                      <select name="type" value={academicEventForm.type} onChange={handleAcademicEventInputChange}>
+                        <option value="holiday">Holiday</option>
+                        <option value="exam">Exam Week</option>
+                        <option value="no_class">No-Class Day</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Start Date</label>
+                      <input type="date" name="startDate" value={academicEventForm.startDate} onChange={handleAcademicEventInputChange} />
+                    </div>
+                    <div className="form-group">
+                      <label>End Date</label>
+                      <input type="date" name="endDate" value={academicEventForm.endDate} onChange={handleAcademicEventInputChange} />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                      <label>Notes</label>
+                      <input
+                        name="notes"
+                        value={academicEventForm.notes}
+                        onChange={handleAcademicEventInputChange}
+                        placeholder="University closed for all classes"
+                      />
+                    </div>
+                  </div>
+
+                  <button className="add-btn" type="button" onClick={handleSaveAcademicEvent}>
+                    Save Academic Calendar Event
+                  </button>
+
+                  <div className="table-wrapper" style={{ marginTop: "1.25rem" }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Title</th>
+                          <th>Type</th>
+                          <th>Date Range</th>
+                          <th>Notes</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(academicConfig.academicEvents || []).length > 0 ? (
+                          academicConfig.academicEvents.map((event, index) => (
+                            <tr key={`${event.title}-${event.startDate}-${index}`}>
+                              <td>{event.title}</td>
+                              <td style={{ textTransform: "capitalize" }}>{event.type.replace("_", " ")}</td>
+                              <td>
+                                {formatDateLabel(event.startDate)} - {formatDateLabel(event.endDate)}
+                              </td>
+                              <td>{event.notes || "-"}</td>
+                              <td>
+                                <button className="action-btn delete" type="button" onClick={() => handleRemoveAcademicEvent(index)}>
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan="5" className="no-data">No academic calendar events added yet.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
@@ -1277,9 +1734,9 @@ function AdminDashboard() {
                   ? "Student"
                   : modalType === "professor"
                     ? "Professor"
-                    : modalType === "course"
-                      ? "Course"
-                      : "Class Schedule"}
+                      : modalType === "course"
+                        ? "Course"
+                      : "Recurring Timetable Slot"}
               </h2>
               <button className="modal-close" onClick={closeModal}>X</button>
             </div>
@@ -1424,8 +1881,27 @@ function AdminDashboard() {
                     </select>
                   </div>
                   <div className="form-group">
-                    <label>Schedule Date</label>
-                    <input type="date" name="scheduleDate" value={formData.scheduleDate || ""} onChange={handleInputChange} />
+                    <label>Term Start Date</label>
+                    <input type="date" name="termStartDate" value={formData.termStartDate || ""} onChange={handleInputChange} />
+                  </div>
+                  <div className="form-group">
+                    <label>Term End Date</label>
+                    <input type="date" name="termEndDate" value={formData.termEndDate || ""} onChange={handleInputChange} />
+                  </div>
+                  <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                    <label>Weekly Timetable Days</label>
+                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                      {weekdayOrder.map((weekday) => (
+                        <button
+                          key={weekday}
+                          type="button"
+                          className={`action-btn ${(formData.weekdays || []).includes(weekday) ? "edit" : "delete"}`}
+                          onClick={() => handleWeekdayToggle(weekday)}
+                        >
+                          {weekday}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div className="form-group">
                     <label>Start Time</label>

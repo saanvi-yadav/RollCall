@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../styles/student-dashboard.css";
 import { useTheme } from "../context/ThemeContext";
@@ -17,6 +17,14 @@ import {
 const getAcademicId = (user = {}) =>
   user.username || user.email?.split("@")[0] || "Not Available";
 
+const getInitials = (name = "") =>
+  name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "ST";
+
 const formatMonthKey = (dateValue) => {
   const date = new Date(dateValue);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
@@ -25,6 +33,94 @@ const formatMonthKey = (dateValue) => {
 const formatDayKey = (dateValue) => {
   const date = new Date(dateValue);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+};
+
+const getMonthStart = (dateValue = new Date()) => {
+  const date = new Date(dateValue);
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+};
+
+const formatMonthLabel = (dateValue) =>
+  new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(dateValue));
+
+const formatDateLabel = (dateValue) =>
+  dateValue ? new Date(dateValue).toLocaleDateString() : "Not set";
+
+const weekdayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const weekdayByIndex = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const getWeekdayFromDate = (dateValue) => {
+  if (!dateValue) {
+    return "";
+  }
+
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return weekdayByIndex[date.getDay()];
+};
+
+const getClassWeekdays = (classItem = {}) => {
+  const values =
+    Array.isArray(classItem.weekdays) && classItem.weekdays.length > 0
+      ? classItem.weekdays
+      : [getWeekdayFromDate(classItem.scheduleDate)].filter(Boolean);
+
+  return [...new Set(values)].sort(
+    (left, right) => weekdayOrder.indexOf(left) - weekdayOrder.indexOf(right),
+  );
+};
+
+const calculateAttendanceTarget = (presentCount, totalCount, targetPercentage = 75) => {
+  const targetRatio = targetPercentage / 100;
+
+  if (totalCount === 0) {
+    return {
+      status: "no-data",
+      canMissMore: 0,
+      classesNeeded: 0,
+    };
+  }
+
+  const currentRatio = presentCount / totalCount;
+
+  if (currentRatio >= targetRatio) {
+    const canMissMore = Math.max(
+      0,
+      Math.floor(presentCount / targetRatio - totalCount),
+    );
+
+    return {
+      status: "safe",
+      canMissMore,
+      classesNeeded: 0,
+    };
+  }
+
+  const classesNeeded = Math.max(
+    0,
+    Math.ceil((targetRatio * totalCount - presentCount) / (1 - targetRatio)),
+  );
+
+  return {
+    status: "below",
+    canMissMore: 0,
+    classesNeeded,
+  };
+};
+
+const calculateProjectedPercentage = (presentCount, totalCount, additionalAbsences = 0) => {
+  const nextTotal = totalCount + additionalAbsences;
+  if (nextTotal <= 0) {
+    return 0;
+  }
+
+  return Number(((presentCount / nextTotal) * 100).toFixed(2));
 };
 
 const getPercentageColor = (percentage) => {
@@ -86,7 +182,10 @@ function StudentDashboard() {
     departments: [],
     semesters: [],
     sections: [],
+    academicEvents: [],
   });
+  const [selectedCalendarMonth, setSelectedCalendarMonth] = useState(() => getMonthStart());
+  const profileMenuRef = useRef(null);
 
   useEffect(() => {
     document.body.style.overflow = showProfileSetupModal ? "hidden" : "";
@@ -135,6 +234,7 @@ function StudentDashboard() {
           departments: academicConfigResponse.departments || [],
           semesters: academicConfigResponse.semesters || [],
           sections: academicConfigResponse.sections || [],
+          academicEvents: academicConfigResponse.academicEvents || [],
         });
 
         const uniqueClasses = Array.from(
@@ -151,14 +251,14 @@ function StudentDashboard() {
 
         const groupedSubjects = new Map();
         normalizedHistory.forEach((record) => {
-          const key = `${record.subject}-${record.course}-${record.section}-${record.semester}`;
+          const key = (record.subject || "General Attendance").trim().toLowerCase();
           if (!groupedSubjects.has(key)) {
             groupedSubjects.set(key, {
               id: key,
               name: record.subject,
-              course: record.course,
-              semester: record.semester,
-              section: record.section,
+              courses: new Set(),
+              semesters: new Set(),
+              sections: new Set(),
               totalClasses: 0,
               present: 0,
               absent: 0,
@@ -168,6 +268,15 @@ function StudentDashboard() {
           }
 
           const subject = groupedSubjects.get(key);
+          if (record.course) {
+            subject.courses.add(record.course);
+          }
+          if (record.semester) {
+            subject.semesters.add(String(record.semester));
+          }
+          if (record.section) {
+            subject.sections.add(record.section);
+          }
           subject.totalClasses += 1;
           if (record.status === "Present") {
             subject.present += 1;
@@ -185,6 +294,9 @@ function StudentDashboard() {
 
             return {
               ...subject,
+              course: [...subject.courses].join(", "),
+              semester: [...subject.semesters].join(", "),
+              section: [...subject.sections].join(", "),
               percentage,
               warning: percentage < 75,
             };
@@ -219,7 +331,7 @@ function StudentDashboard() {
           name: currentUser?.name || "Student",
           studentId: getAcademicId(currentUser || {}),
           course: primaryClass?.course || "Not Assigned",
-          department: currentUser?.department || primaryClass?.subject || "Not Assigned",
+          department: currentUser?.department || "Not Assigned",
           semester: currentUser?.semester || primaryClass?.semester || "Not Assigned",
           section: currentUser?.section || primaryClass?.section || "Not Assigned",
           profilePhoto: `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser?.name || "Student")}&size=150&background=6366f1&color=fff`,
@@ -250,13 +362,28 @@ function StudentDashboard() {
     setShowProfileSetupModal(Boolean(shouldCompleteProfile));
   }, [currentUser]);
 
+  useEffect(() => {
+    if (!showProfileMenu) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
+        setShowProfileMenu(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [showProfileMenu]);
+
   const filteredHistory =
     activeFilter === "all"
       ? attendanceHistory
       : attendanceHistory.filter((record) => record.status === activeFilter);
 
   const calendarDays = useMemo(() => {
-    const currentDate = new Date();
+    const currentDate = selectedCalendarMonth;
     const monthKey = formatMonthKey(currentDate);
     const daysInMonth = new Date(
       currentDate.getFullYear(),
@@ -276,32 +403,83 @@ function StudentDashboard() {
       recordsByDay.get(dayKey).push(record.status);
     });
 
+    const eventsByDay = new Map();
+    (academicConfig.academicEvents || []).forEach((event) => {
+      const startDate = new Date(event.startDate);
+      const endDate = new Date(event.endDate);
+      const cursor = new Date(startDate);
+
+      while (cursor <= endDate) {
+        const dayKey = formatDayKey(cursor);
+        eventsByDay.set(dayKey, event);
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    });
+
     return Array.from({ length: daysInMonth }, (_, index) => {
       const dayNumber = index + 1;
       const dayKey = `${monthKey}-${String(dayNumber).padStart(2, "0")}`;
       const statuses = recordsByDay.get(dayKey) || [];
+      const event = eventsByDay.get(dayKey) || null;
       const hasClass = statuses.length > 0;
       const allPresent = hasClass && statuses.every((status) => status === "Present");
+      const eventColor =
+        event?.type === "holiday"
+          ? "#f59e0b"
+          : event?.type === "exam"
+            ? "#8b5cf6"
+            : event?.type === "no_class"
+              ? "#06b6d4"
+              : null;
 
       return {
         dayNumber,
-        color: !hasClass ? "#e5e7eb" : allPresent ? "#10b981" : "#ef4444",
+        color: eventColor || (!hasClass ? "#e5e7eb" : allPresent ? "#10b981" : "#ef4444"),
+        label: event?.title || "",
       };
     });
-  }, [attendanceHistory]);
+  }, [academicConfig.academicEvents, attendanceHistory, selectedCalendarMonth]);
 
-  const monthlyInsight = useMemo(() => {
-    const monthKey = formatMonthKey(new Date());
-    const monthlyRecords = attendanceHistory.filter(
-      (record) => formatMonthKey(record.date) === monthKey,
-    );
-    const presentCount = monthlyRecords.filter((record) => record.status === "Present").length;
-    const totalCount = monthlyRecords.length;
+  const semesterInsight = useMemo(() => {
+    const activeSemester = String(studentData.semester || currentUser?.semester || "").trim();
+    const semesterRecords = activeSemester
+      ? attendanceHistory.filter(
+          (record) => String(record.semester || "").trim() === activeSemester,
+        )
+      : attendanceHistory;
+
+    const presentCount = semesterRecords.filter((record) => record.status === "Present").length;
+    const totalCount = semesterRecords.length;
     const attendancePercentage =
       totalCount === 0 ? 0 : Number(((presentCount / totalCount) * 100).toFixed(2));
-    const strongestSubject = [...subjectAttendance].sort(
-      (a, b) => b.percentage - a.percentage,
-    )[0];
+
+    const subjectSummary = new Map();
+    semesterRecords.forEach((record) => {
+      const key = (record.subject || "General Attendance").trim();
+      if (!subjectSummary.has(key)) {
+        subjectSummary.set(key, {
+          name: key,
+          totalClasses: 0,
+          present: 0,
+        });
+      }
+
+      const subject = subjectSummary.get(key);
+      subject.totalClasses += 1;
+      if (record.status === "Present") {
+        subject.present += 1;
+      }
+    });
+
+    const strongestSubject = [...subjectSummary.values()]
+      .map((subject) => ({
+        ...subject,
+        percentage:
+          subject.totalClasses === 0
+            ? 0
+            : Number(((subject.present / subject.totalClasses) * 100).toFixed(2)),
+      }))
+      .sort((a, b) => b.percentage - a.percentage)[0];
 
     return {
       totalCount,
@@ -309,7 +487,113 @@ function StudentDashboard() {
       attendancePercentage,
       strongestSubject: strongestSubject?.name || "No subject data",
     };
-  }, [attendanceHistory, subjectAttendance]);
+  }, [attendanceHistory, currentUser?.semester, studentData.semester]);
+  const recentNotifications = useMemo(
+    () =>
+      [...notifications]
+        .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
+        .slice(0, 5),
+    [notifications],
+  );
+  const activeSemester = String(studentData.semester || currentUser?.semester || "").trim();
+  const semesterRecords = useMemo(
+    () =>
+      activeSemester
+        ? attendanceHistory.filter(
+            (record) => String(record.semester || "").trim() === activeSemester,
+          )
+        : attendanceHistory,
+    [activeSemester, attendanceHistory],
+  );
+  const semesterTrendData = useMemo(() => {
+    const grouped = new Map();
+
+    attendanceHistory.forEach((record) => {
+      const semesterKey = String(record.semester || "Unassigned").trim() || "Unassigned";
+      if (!grouped.has(semesterKey)) {
+        grouped.set(semesterKey, {
+          semester: semesterKey,
+          total: 0,
+          present: 0,
+        });
+      }
+
+      const item = grouped.get(semesterKey);
+      item.total += 1;
+      if (record.status === "Present") {
+        item.present += 1;
+      }
+    });
+
+    return [...grouped.values()]
+      .map((item) => ({
+        ...item,
+        percentage:
+          item.total === 0 ? 0 : Number(((item.present / item.total) * 100).toFixed(2)),
+      }))
+      .sort((left, right) => {
+        const leftValue = Number(left.semester);
+        const rightValue = Number(right.semester);
+        if (!Number.isNaN(leftValue) && !Number.isNaN(rightValue)) {
+          return leftValue - rightValue;
+        }
+
+        return left.semester.localeCompare(right.semester);
+      });
+  }, [attendanceHistory]);
+  const timetableEntries = useMemo(
+    () =>
+      [...enrolledClasses]
+        .map((classItem) => ({
+          ...classItem,
+          weekdayLabel: getClassWeekdays(classItem).join(", ") || "Not scheduled",
+          termLabel: `${formatDateLabel(classItem.termStartDate || classItem.scheduleDate)} - ${formatDateLabel(
+            classItem.termEndDate || classItem.scheduleDate,
+          )}`,
+        }))
+        .sort((left, right) => {
+          const leftDays = getClassWeekdays(left);
+          const rightDays = getClassWeekdays(right);
+          const leftIndex = leftDays.length ? weekdayOrder.indexOf(leftDays[0]) : 99;
+          const rightIndex = rightDays.length ? weekdayOrder.indexOf(rightDays[0]) : 99;
+          if (leftIndex !== rightIndex) {
+            return leftIndex - rightIndex;
+          }
+
+          return String(left.startTime || "").localeCompare(String(right.startTime || ""));
+        }),
+    [enrolledClasses],
+  );
+  const attendancePlanner = useMemo(() => {
+    const overall = calculateAttendanceTarget(
+      semesterRecords.filter((record) => record.status === "Present").length,
+      semesterRecords.length,
+    );
+    const overallPresent = semesterRecords.filter((record) => record.status === "Present").length;
+    const overallTotal = semesterRecords.length;
+
+    const subjects = subjectAttendance.map((subject) => ({
+      ...subject,
+      planner: calculateAttendanceTarget(subject.present, subject.totalClasses),
+      prediction:
+        subject.totalClasses > 0
+          ? {
+              afterTwoMisses: calculateProjectedPercentage(subject.present, subject.totalClasses, 2),
+            }
+          : null,
+    }));
+
+    return {
+      overall: {
+        ...overall,
+        afterTwoMisses:
+          overallTotal > 0
+            ? calculateProjectedPercentage(overallPresent, overallTotal, 2)
+            : 0,
+      },
+      subjects,
+    };
+  }, [semesterRecords, subjectAttendance]);
 
   const dismissWarning = (id) => {
     setWarnings((prevWarnings) => prevWarnings.filter((warning) => warning.id !== id));
@@ -428,6 +712,48 @@ function StudentDashboard() {
     }
   };
 
+  const downloadAttendanceReport = () => {
+    const reportLines = [
+      ["Student Name", studentData.name],
+      ["Student ID", studentData.studentId],
+      ["Department", studentData.department],
+      ["Semester", studentData.semester],
+      ["Section", studentData.section],
+      [],
+      ["Subject", "Present", "Absent", "Total", "Percentage"],
+      ...subjectAttendance.map((subject) => [
+        subject.name,
+        subject.present,
+        subject.absent,
+        subject.totalClasses,
+        `${subject.percentage}%`,
+      ]),
+      [],
+      ["Date", "Subject", "Course", "Section", "Status"],
+      ...attendanceHistory.map((record) => [
+        new Date(record.date).toLocaleDateString(),
+        record.subject,
+        record.course || "General",
+        record.section || "-",
+        record.status,
+      ]),
+    ];
+
+    const csvContent = reportLines
+      .map((row) =>
+        row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(","),
+      )
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `attendance-report-${studentData.studentId || "student"}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="student-dashboard">
       <div className="dashboard-topbar">
@@ -442,7 +768,26 @@ function StudentDashboard() {
           >
             {isDark ? "☀️" : "🌙"}
           </button>
-          <div className="profile-menu-wrapper">
+          <div className="profile-menu-wrapper" ref={profileMenuRef}>
+            <button
+              className={`account-trigger student ${showProfileMenu ? "open" : ""}`}
+              onClick={() => setShowProfileMenu((prev) => !prev)}
+              title="Open account menu"
+              type="button"
+            >
+              <div className="account-trigger-avatar">
+                <img
+                  src={studentData.profilePhoto}
+                  alt={studentData.name}
+                  className="account-trigger-image"
+                />
+              </div>
+              <div className="account-trigger-copy">
+                <span className="account-trigger-name">{studentData.name}</span>
+                <span className="account-trigger-role">Student</span>
+              </div>
+              <span className="account-trigger-caret">{showProfileMenu ? "˄" : "˅"}</span>
+            </button>
             <button
               className="profile-menu-btn"
               onClick={() => setShowProfileMenu((prev) => !prev)}
@@ -452,10 +797,21 @@ function StudentDashboard() {
             </button>
             {showProfileMenu && (
               <div className="profile-menu-dropdown">
+                <div className="profile-menu-summary">
+                  <div className="profile-menu-avatar student">{getInitials(studentData.name)}</div>
+                  <div className="profile-menu-summary-copy">
+                    <strong>{studentData.name}</strong>
+                    <span>{currentUser?.email || "Student account"}</span>
+                  </div>
+                </div>
+                <button className="menu-item" onClick={toggleTheme} type="button">
+                  <span>Appearance</span>
+                  <span>{isDark ? "Light" : "Dark"}</span>
+                </button>
                 <button className="menu-item" onClick={handleChangePasswordOpen}>
                   🔐 Change Password
                 </button>
-                <button className="menu-item" onClick={handleLogout}>
+                <button className="menu-item danger" onClick={handleLogout}>
                   🚪 Logout
                 </button>
               </div>
@@ -659,6 +1015,22 @@ function StudentDashboard() {
         </div>
       )}
 
+      {!loading && recentNotifications.length > 0 && (
+        <div className="announcement-marquee" aria-label="Recent announcements">
+          <div className="announcement-marquee-track">
+            {[...recentNotifications, ...recentNotifications].map((notification, index) => (
+              <div key={`${notification._id}-${index}`} className="announcement-pill">
+                <span className="announcement-pill-title">{notification.title}</span>
+                <span className="announcement-pill-message">{notification.message}</span>
+                <span className="announcement-pill-meta">
+                  {notification.author?.name || "University"} | {new Date(notification.createdAt).toLocaleDateString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="glass-panel profile-section">
         <div className="profile-container">
           <div className="profile-image-wrapper">
@@ -677,7 +1049,7 @@ function StudentDashboard() {
                 <span className="detail-value">{studentData.course}</span>
               </div>
               <div className="detail-item">
-                <span className="detail-label">Department / Subject</span>
+                <span className="detail-label">Department</span>
                 <span className="detail-value">{studentData.department}</span>
               </div>
               <div className="detail-item">
@@ -893,7 +1265,27 @@ function StudentDashboard() {
       <div className="glass-panel calendar-section">
         <div className="section-header">
           <h3>Calendar Overview</h3>
-          <p className="section-subtitle">Real attendance status for this month</p>
+          <div className="calendar-header-actions">
+            <button
+              className="calendar-nav-btn"
+              type="button"
+              onClick={() =>
+                setSelectedCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
+              }
+            >
+              Previous
+            </button>
+            <span className="calendar-month-label">{formatMonthLabel(selectedCalendarMonth)}</span>
+            <button
+              className="calendar-nav-btn"
+              type="button"
+              onClick={() =>
+                setSelectedCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
+              }
+            >
+              Next
+            </button>
+          </div>
         </div>
 
         <div className="calendar-legend">
@@ -909,6 +1301,18 @@ function StudentDashboard() {
             <div className="legend-color" style={{ backgroundColor: "#e5e7eb" }}></div>
             <span>No Class</span>
           </div>
+          <div className="legend-item">
+            <div className="legend-color" style={{ backgroundColor: "#f59e0b" }}></div>
+            <span>Holiday</span>
+          </div>
+          <div className="legend-item">
+            <div className="legend-color" style={{ backgroundColor: "#8b5cf6" }}></div>
+            <span>Exam Week</span>
+          </div>
+          <div className="legend-item">
+            <div className="legend-color" style={{ backgroundColor: "#06b6d4" }}></div>
+            <span>No-Class Day</span>
+          </div>
         </div>
 
         <div className="calendar-grid">
@@ -917,6 +1321,7 @@ function StudentDashboard() {
               key={day.dayNumber}
               className="calendar-day"
               style={{ backgroundColor: day.color }}
+              title={day.label || `Day ${day.dayNumber}`}
             >
               {day.dayNumber}
             </div>
@@ -924,32 +1329,148 @@ function StudentDashboard() {
         </div>
       </div>
 
-      <div className="glass-panel history-section">
+<div className="glass-panel history-section">
         <div className="section-header">
           <h3>Attendance Insights</h3>
-          <p className="section-subtitle">Quick analytics for the current month</p>
+          <p className="section-subtitle">Quick analytics for the current semester</p>
         </div>
         <div className="stats-grid-student">
           <div className="stat-card-student blue">
             <div className="stat-icon">🗓️</div>
-            <span>This Month</span>
-            <h2>{monthlyInsight.totalCount}</h2>
+            <span>This Semester</span>
+            <h2>{semesterInsight.totalCount}</h2>
           </div>
           <div className="stat-card-student green">
             <div className="stat-icon">✅</div>
-            <span>Present This Month</span>
-            <h2>{monthlyInsight.presentCount}</h2>
+            <span>Present This Semester</span>
+            <h2>{semesterInsight.presentCount}</h2>
           </div>
           <div className="stat-card-student orange">
             <div className="stat-icon">📈</div>
-            <span>Monthly %</span>
-            <h2>{monthlyInsight.attendancePercentage}%</h2>
+            <span>Semester %</span>
+            <h2>{semesterInsight.attendancePercentage}%</h2>
           </div>
           <div className="stat-card-student red">
             <div className="stat-icon">🏅</div>
             <span>Best Subject</span>
-            <h2>{monthlyInsight.strongestSubject}</h2>
+            <h2>{semesterInsight.strongestSubject}</h2>
           </div>
+        </div>
+      </div>
+
+      <div className="glass-panel self-service-section">
+        <div className="section-header">
+          <h3>Self-Service Tools</h3>
+          <p className="section-subtitle">Download reports and monitor your semester progress</p>
+        </div>
+        <div className="self-service-actions">
+          <button className="btn-submit self-service-btn" type="button" onClick={downloadAttendanceReport}>
+            Download Personal Attendance Report
+          </button>
+          <div className="self-service-summary">
+            <span>Semester</span>
+            <strong>{activeSemester || "Not Assigned"}</strong>
+          </div>
+          <div className="self-service-summary">
+            <span>Subjects Tracked</span>
+            <strong>{subjectAttendance.length}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="glass-panel timetable-section">
+        <div className="section-header">
+          <h3>My Timetable</h3>
+          <p className="section-subtitle">Your recurring classes for the semester</p>
+        </div>
+        <div className="timetable-grid">
+          {timetableEntries.length > 0 ? (
+            timetableEntries.map((classItem) => (
+              <div key={classItem._id} className="timetable-card">
+                <div className="timetable-card-top">
+                  <h4>{classItem.subject}</h4>
+                  <span>{classItem.course}</span>
+                </div>
+                <p>{classItem.weekdayLabel}</p>
+                <p>{classItem.startTime} - {classItem.endTime}</p>
+                <p>{classItem.termLabel}</p>
+                <p>Section {classItem.section}{classItem.room ? ` | Room ${classItem.room}` : ""}</p>
+              </div>
+            ))
+          ) : (
+            <div className="no-data">No timetable slots assigned yet.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="glass-panel trend-section">
+        <div className="section-header">
+          <h3>Semester Trend</h3>
+          <p className="section-subtitle">Attendance percentage across your semesters</p>
+        </div>
+        <div className="trend-chart">
+          {semesterTrendData.length > 0 ? (
+            semesterTrendData.map((item) => (
+              <div key={item.semester} className="trend-bar-group">
+                <div className="trend-bar-shell">
+                  <div
+                    className="trend-bar-fill"
+                    style={{
+                      height: `${Math.max(item.percentage, 6)}%`,
+                      backgroundColor: getPercentageColor(item.percentage),
+                    }}
+                  ></div>
+                </div>
+                <strong>{item.percentage}%</strong>
+                <span>Sem {item.semester}</span>
+              </div>
+            ))
+          ) : (
+            <div className="no-data">Not enough attendance history to show a semester trend.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="glass-panel planner-section">
+        <div className="section-header">
+          <h3>Attendance Prediction</h3>
+          <p className="section-subtitle">See how future absences or presents will affect your 75% target</p>
+        </div>
+        <div className="planner-grid">
+          <div className="planner-card overall">
+            <h4>Overall Semester Prediction</h4>
+            {attendancePlanner.overall.status !== "no-data" && (
+              <p>
+                If you miss 2 more classes, your attendance will drop to{" "}
+                {attendancePlanner.overall.afterTwoMisses}%.
+              </p>
+            )}
+            {attendancePlanner.overall.status === "safe" ? (
+              <p>You can miss about {attendancePlanner.overall.canMissMore} more classes and stay above 75%.</p>
+            ) : attendancePlanner.overall.status === "below" ? (
+              <p>You need {attendancePlanner.overall.classesNeeded} consecutive presents to reach 75%.</p>
+            ) : (
+              <p>No attendance data available yet for planning.</p>
+            )}
+          </div>
+          {attendancePlanner.subjects.map((subject) => (
+            <div key={subject.id} className="planner-card">
+              <h4>{subject.name}</h4>
+              {subject.prediction && (
+                <p>
+                  If you miss 2 more {subject.totalClasses === 1 ? "class" : "classes"}, attendance becomes{" "}
+                  {subject.prediction.afterTwoMisses}%.
+                </p>
+              )}
+              {subject.planner.status === "safe" ? (
+                <p>Can miss {subject.planner.canMissMore} more class(es) and remain above 75%.</p>
+              ) : subject.planner.status === "below" ? (
+                <p>Needs {subject.planner.classesNeeded} consecutive present class(es) to recover to 75%.</p>
+              ) : (
+                <p>Not enough data yet for this subject.</p>
+              )}
+            </div>
+          ))}
         </div>
       </div>
 

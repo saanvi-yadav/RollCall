@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
 
+const weekdayValues = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
 const classSchema = new mongoose.Schema(
   {
     subject: {
@@ -36,7 +38,31 @@ const classSchema = new mongoose.Schema(
     ],
     scheduleDate: {
       type: Date,
+      default: null,
+    },
+    termStartDate: {
+      type: Date,
       required: true,
+    },
+    termEndDate: {
+      type: Date,
+      required: true,
+    },
+    weekdays: [
+      {
+        type: String,
+        enum: weekdayValues,
+      },
+    ],
+    exceptions: [
+      {
+        type: Date,
+      },
+    ],
+    scheduleType: {
+      type: String,
+      enum: ["weekly"],
+      default: "weekly",
     },
     startTime: {
       type: String,

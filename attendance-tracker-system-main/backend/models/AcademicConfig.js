@@ -25,6 +25,33 @@ const academicConfigSchema = new mongoose.Schema(
         trim: true,
       },
     ],
+    academicEvents: [
+      {
+        title: {
+          type: String,
+          trim: true,
+          required: true,
+        },
+        type: {
+          type: String,
+          enum: ["holiday", "exam", "no_class"],
+          required: true,
+        },
+        startDate: {
+          type: Date,
+          required: true,
+        },
+        endDate: {
+          type: Date,
+          required: true,
+        },
+        notes: {
+          type: String,
+          trim: true,
+          default: "",
+        },
+      },
+    ],
   },
   { timestamps: true },
 );

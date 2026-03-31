@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../styles/professor-dashboard.css";
 import { useTheme } from "../context/ThemeContext";
@@ -29,6 +29,14 @@ const getAcademicId = (student = {}) =>
 
 const compareAcademicIds = (left = "", right = "") =>
   left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+
+const getInitials = (name = "") =>
+  name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "PR";
 
 const getNotificationFilterLabel = (notification) => {
   const parts = [];
@@ -63,6 +71,9 @@ function ProfessorDashboard() {
   const [attendanceStatus, setAttendanceStatus] = useState({});
   const [activeTab, setActiveTab] = useState("mark");
   const [editingRecord, setEditingRecord] = useState(null);
+  const [viewingRecord, setViewingRecord] = useState(null);
+  const [viewingRecordStudents, setViewingRecordStudents] = useState([]);
+  const [viewingRecordLoading, setViewingRecordLoading] = useState(false);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [reportData, setReportData] = useState(null);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -89,6 +100,7 @@ function ProfessorDashboard() {
     newPassword: "",
     confirmNewPassword: "",
   });
+  const profileMenuRef = useRef(null);
 
   const submissionProgress = students.length
     ? Math.round((Object.keys(attendanceStatus).length / students.length) * 100)
@@ -104,6 +116,13 @@ function ProfessorDashboard() {
     () =>
       [...students].sort((a, b) => compareAcademicIds(getAcademicId(a), getAcademicId(b))),
     [students],
+  );
+  const recentNotifications = useMemo(
+    () =>
+      [...notifications]
+        .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
+        .slice(0, 5),
+    [notifications],
   );
 
   const refreshAttendanceRecords = useCallback(async () => {
@@ -208,6 +227,21 @@ function ProfessorDashboard() {
     loadStudents();
   }, [activeTab, editingRecord?.classId, loadReport, refreshAttendanceRecords, selectedClass?._id]);
 
+  useEffect(() => {
+    if (!showProfileMenu) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
+        setShowProfileMenu(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [showProfileMenu]);
+
   const handleAttendanceChange = (studentId, status) => {
     setAttendanceStatus((prev) => ({
       ...prev,
@@ -258,16 +292,25 @@ function ProfessorDashboard() {
     }
   };
 
-  const startEditRecord = async (record) => {
-    const sessionDate = toDateInputValue(record.date);
+  const loadEditSession = useCallback(async () => {
+    if (!selectedClass?._id || !selectedDate) {
+      setEditingRecord(null);
+      return;
+    }
 
     try {
       const [session, studentsResponse] = await Promise.all([
-        attendanceAPI.getClassAttendanceSession(record.classId, sessionDate),
-        classAPI.getClassStudents(record.classId),
+        attendanceAPI.getClassAttendanceSession(selectedClass._id, selectedDate),
+        classAPI.getClassStudents(selectedClass._id),
       ]);
-      const matchingClass =
-        classes.find((classItem) => classItem._id === record.classId) || selectedClass;
+
+      if (!session?.students?.length) {
+        setEditingRecord(null);
+        setAttendanceStatus({});
+        setError("No attendance session exists for the selected class and date.");
+        return;
+      }
+
       const nextStatus = {};
       studentsResponse.forEach((student) => {
         nextStatus[student._id] = "";
@@ -275,17 +318,48 @@ function ProfessorDashboard() {
       session.students.forEach((student) => {
         nextStatus[student.studentId] = student.status;
       });
-      setSelectedDate(sessionDate);
-      setSelectedClass(matchingClass);
+
       setStudents(studentsResponse);
       setAttendanceStatus(nextStatus);
       setEditingRecord({
-        ...record,
+        id: session.id || `${selectedClass._id}-${selectedDate}`,
+        classId: session.classId || selectedClass._id,
+        date: session.date || selectedDate,
+        subject: session.subject || selectedClass.subject,
+        section: session.section || selectedClass.section,
+        course: session.course || selectedClass.course,
+        presentCount: session.presentCount || 0,
+        totalCount: session.totalCount || 0,
         students: session.students,
       });
-      setActiveTab("edit");
+      setError("");
     } catch (err) {
+      setEditingRecord(null);
       setError(err.message || "Failed to load the attendance session");
+    }
+  }, [selectedClass, selectedDate]);
+
+  useEffect(() => {
+    if (activeTab !== "edit") {
+      return;
+    }
+
+    loadEditSession();
+  }, [activeTab, loadEditSession]);
+
+  const openViewRecord = async (record) => {
+    const sessionDate = toDateInputValue(record.date);
+    setViewingRecord({ ...record, sessionDate });
+    setViewingRecordStudents([]);
+    setViewingRecordLoading(true);
+
+    try {
+      const session = await attendanceAPI.getClassAttendanceSession(record.classId, sessionDate);
+      setViewingRecordStudents(session.students || []);
+    } catch (err) {
+      setError(err.message || "Failed to load attendance session details");
+    } finally {
+      setViewingRecordLoading(false);
     }
   };
 
@@ -407,7 +481,26 @@ function ProfessorDashboard() {
           >
             {isDark ? "☀️" : "🌙"}
           </button>
-          <div className="profile-menu-wrapper">
+          <div className="profile-menu-wrapper" ref={profileMenuRef}>
+            <button
+              className={`account-trigger professor ${showProfileMenu ? "open" : ""}`}
+              onClick={() => setShowProfileMenu((prev) => !prev)}
+              title="Open account menu"
+              type="button"
+            >
+              <div className="account-trigger-avatar">
+                <img
+                  src={professorData?.profilePhoto}
+                  alt={professorData?.name || "Professor"}
+                  className="account-trigger-image"
+                />
+              </div>
+              <div className="account-trigger-copy">
+                <span className="account-trigger-name">{professorData?.name || "Professor"}</span>
+                <span className="account-trigger-role">Professor</span>
+              </div>
+              <span className="account-trigger-caret">{showProfileMenu ? "˄" : "˅"}</span>
+            </button>
             <button
               className="profile-menu-btn"
               onClick={() => setShowProfileMenu((prev) => !prev)}
@@ -417,10 +510,21 @@ function ProfessorDashboard() {
             </button>
             {showProfileMenu && (
               <div className="profile-menu-dropdown">
+                <div className="profile-menu-summary">
+                  <div className="profile-menu-avatar professor">{getInitials(professorData?.name || "Professor")}</div>
+                  <div className="profile-menu-summary-copy">
+                    <strong>{professorData?.name || "Professor"}</strong>
+                    <span>{currentUser?.email || "Professor account"}</span>
+                  </div>
+                </div>
+                <button className="menu-item" onClick={toggleTheme} type="button">
+                  <span>Appearance</span>
+                  <span>{isDark ? "Light" : "Dark"}</span>
+                </button>
                 <button className="menu-item" onClick={handleChangePasswordOpen}>
                   Change Password
                 </button>
-                <button className="menu-item" onClick={handleLogout}>
+                <button className="menu-item danger" onClick={handleLogout}>
                   🚪 Logout
                 </button>
               </div>
@@ -519,6 +623,22 @@ function ProfessorDashboard() {
         </div>
       ) : (
         <>
+          {recentNotifications.length > 0 && (
+            <div className="announcement-marquee" aria-label="Recent announcements">
+              <div className="announcement-marquee-track">
+                {[...recentNotifications, ...recentNotifications].map((notification, index) => (
+                  <div key={`${notification._id}-${index}`} className="announcement-pill">
+                    <span className="announcement-pill-title">{notification.title}</span>
+                    <span className="announcement-pill-message">{notification.message}</span>
+                    <span className="announcement-pill-meta">
+                      {notification.author?.name || "University"} | {new Date(notification.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="dashboard-header">
             <h1>Professor Dashboard</h1>
             <p>Manage classes, attendance sessions, and reports with live data.</p>
@@ -973,7 +1093,7 @@ function ProfessorDashboard() {
                           <th>Section</th>
                           <th>Present / Total</th>
                           <th>Percentage</th>
-                          <th>Actions</th>
+                          <th>View</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1000,20 +1120,14 @@ function ProfessorDashboard() {
                                   {record.percentage}%
                                 </span>
                               </td>
-                              <td>
+<td>
                                 <button
                                   className="action-icon-btn view"
                                   title="View Details"
-                                  onClick={() => startEditRecord(record)}
+                                  type="button"
+                                  onClick={() => openViewRecord(record)}
                                 >
                                   👁️
-                                </button>
-                                <button
-                                  className="action-icon-btn edit"
-                                  title="Edit"
-                                  onClick={() => startEditRecord(record)}
-                                >
-                                  ✏️
                                 </button>
                               </td>
                             </tr>
@@ -1238,7 +1352,7 @@ function ProfessorDashboard() {
                   <div className="no-selection">
                     <p className="empty-state-icon">📋</p>
                     <p className="empty-state-text">
-                      Select a record from the View Records tab to edit it.
+                      Choose a class and date above to load an attendance session for editing.
                     </p>
                   </div>
                 )}
@@ -1246,6 +1360,87 @@ function ProfessorDashboard() {
             </div>
           )}
         </>
+      )}
+
+      {viewingRecord && (
+        <div className="modal-overlay" onClick={() => setViewingRecord(null)}>
+          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Attendance Session Details</h2>
+              <button className="modal-close" onClick={() => setViewingRecord(null)}>
+                X
+              </button>
+            </div>
+
+            <div className="edit-info" style={{ marginBottom: "1.5rem" }}>
+              <div className="edit-info-item">
+                <span className="edit-label">Date:</span>
+                <span className="edit-value">{new Date(viewingRecord.date).toLocaleDateString()}</span>
+              </div>
+              <div className="edit-info-item">
+                <span className="edit-label">Subject:</span>
+                <span className="edit-value">{viewingRecord.subject}</span>
+              </div>
+              <div className="edit-info-item">
+                <span className="edit-label">Section:</span>
+                <span className="edit-value">{viewingRecord.section}</span>
+              </div>
+              <div className="edit-info-item">
+                <span className="edit-label">Attendance:</span>
+                <span className="edit-value">
+                  {viewingRecord.presentCount}/{viewingRecord.totalCount}
+                </span>
+              </div>
+            </div>
+
+            {viewingRecordLoading ? (
+              <div className="loading-container">
+                <div className="spinner"></div>
+                <p>Loading session details...</p>
+              </div>
+            ) : (
+              <div className="records-table-wrapper">
+                <table className="records-table">
+                  <thead>
+                    <tr>
+                      <th>Student</th>
+                      <th>Email</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewingRecordStudents.length > 0 ? (
+                      viewingRecordStudents.map((student) => (
+                        <tr key={student.studentId}>
+                          <td>{student.name}</td>
+                          <td>{student.email || "-"}</td>
+                          <td>
+                            <span
+                              className="percentage-badge"
+                              style={{
+                                backgroundColor:
+                                  student.status === "present" ? "#10b98120" : "#ef444420",
+                                color: student.status === "present" ? "#10b981" : "#ef4444",
+                              }}
+                            >
+                              {student.status === "present" ? "Present" : "Absent"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan="3" className="no-data">
+                          No student records found for this session.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
